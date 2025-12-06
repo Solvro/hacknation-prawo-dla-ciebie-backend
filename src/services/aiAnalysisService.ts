@@ -42,6 +42,38 @@ async function extractTextFromPdf(url: string): Promise<string> {
     }
 }
 
+function parseContentSections(text: string): { label: string, text: string }[] {
+    const sections: { label: string, text: string }[] = [];
+
+    // Normalize newlines
+    const cleanText = text.replace(/\r\n/g, '\n').replace(/\n\s*\n/g, '\n\n');
+
+    // Split by Art. or § at start of line (or preceded by newline)
+    // Regex: lookahead for newline followed by Art. number or § number
+    const splitRegex = /(?=\n(?:Art\.|§)\s*\d+)/g;
+
+    const parts = cleanText.split(splitRegex);
+
+    // First part is preamble or title
+    if (parts.length > 0 && parts[0].trim()) {
+        sections.push({ label: 'Wstęp', text: parts[0].trim() });
+    }
+
+    for (let i = 1; i < parts.length; i++) {
+        const part = parts[i].trim();
+        if (!part) continue;
+
+        // Extract label (e.g. "Art. 1." or "§ 1.")
+        // We take the first line or first few characters as label
+        const match = part.match(/^(?:Art\.|§)\s*\d+[a-z]*\.?/);
+        const label = match ? match[0] : `Sekcja ${i}`;
+
+        sections.push({ label, text: part });
+    }
+
+    return sections;
+}
+
 async function analyzeDocument(documentId: number) {
     console.log(`\n🤖 Starting AI analysis for document ID: ${documentId}...`);
 
@@ -117,7 +149,20 @@ async function analyzeDocument(documentId: number) {
         }
     }
 
+
     fullText += attachmentText;
+
+    // --- PARSING CONTENT INTO SECTIONS ---
+    // Jeśli mamy tekst z załączników, spróbujmy go podzielić na sekcje i zapisać
+    let generatedSections: { label: string, text: string }[] = [];
+    if (attachmentText.length > 0) {
+        console.log('   ✂️ Parsing text into content sections...');
+        // Usuń nagłówki "--- ZAŁĄCZNIK... ---" dla czystszego parsowania
+        // (Ale zachowaj je w promptcie dla AI)
+        const pureLawText = attachmentText.replace(/--- ZAŁĄCZNIK: .*? ---\n/g, '');
+        generatedSections = parseContentSections(pureLawText);
+        console.log(`      Found ${generatedSections.length} sections`);
+    }
 
     // Ograniczenie całości tekstu (zabezpieczenie dla modelu)
     if (fullText.length > 100000) {
@@ -202,6 +247,27 @@ Pamiętaj:
                     stakeholders: { set: stakeholderIds }
                 }
             });
+
+            // Zapis ContentSections (jeśli wygenerowano)
+            if (generatedSections.length > 0) {
+                console.log('      Updating Content Sections...');
+                // Opcjonalnie: czyścić stare? Tak, jeśli nadpisujemy.
+                await tx.contentSection.deleteMany({ where: { documentId } });
+
+                for (let i = 0; i < generatedSections.length; i++) {
+                    const sec = generatedSections[i];
+                    await tx.contentSection.create({
+                        data: {
+                            documentId,
+                            externalId: `auto-${documentId}-${i}`, // Autogenerowane ID
+                            label: sec.label,
+                            text: sec.text,
+                            order: i,
+                            version: 1
+                        }
+                    });
+                }
+            }
 
             console.log('      Updating AI Analysis...');
 

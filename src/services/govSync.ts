@@ -135,6 +135,20 @@ function extractSectors(project: GovProject): string[] {
     return Array.from(sectors);
 }
 
+function parseResponsiblePerson(raw: string): { name: string, role: string | null } {
+    if (!raw) return { name: raw, role: null };
+
+    // Heuristic: "Name Surname Role Role..."
+    // We assume the first two words are name and surname.
+    const parts = raw.split(' ');
+    if (parts.length < 3) return { name: raw, role: null };
+
+    const name = parts.slice(0, 2).join(' ');
+    const role = parts.slice(2).join(' ');
+
+    return { name, role };
+}
+
 // Funkcja pomocnicza do upsert taga
 async function getOrCreateTag(name: string) {
     return prisma.tag.upsert({
@@ -287,9 +301,13 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
 
         // Dodaj osobę odpowiedzialną jeśli istnieje
         if (project["Osoba odpowiedzialna za opracowanie projektu"]) {
+            const rawPerson = project["Osoba odpowiedzialna za opracowanie projektu"];
+            const { name, role } = parseResponsiblePerson(rawPerson);
+
             await prisma.responsiblePerson.create({
                 data: {
-                    name: project["Osoba odpowiedzialna za opracowanie projektu"],
+                    name,
+                    role,
                     documentId: document.id
                 }
             });

@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import { prisma } from './lib/prisma';
-import { startScheduler, triggerSync, triggerRclSync, getSchedulerStatus } from './services/scheduler';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,40 +16,40 @@ app.get('/health', (req, res) => {
 // ==================== SYNCHRONIZACJA ====================
 
 // Ręczne wywołanie pełnej synchronizacji (gov.pl + RCL)
-app.post('/api/sync/trigger', async (req, res) => {
-    try {
-        console.log('📡 Manual full sync triggered via API');
-        const result = await triggerSync();
-        res.json({
-            message: 'Full synchronization completed (gov.pl + RCL)',
-            result
-        });
-    } catch (error) {
-        console.error('Error triggering sync:', error);
-        res.status(500).json({ error: 'Failed to trigger synchronization' });
-    }
-});
+// app.post('/api/sync/trigger', async (req, res) => {
+//     try {
+//         console.log('📡 Manual full sync triggered via API');
+//         const result = await triggerSync();
+//         res.json({
+//             message: 'Full synchronization completed (gov.pl + RCL)',
+//             result
+//         });
+//     } catch (error) {
+//         console.error('Error triggering sync:', error);
+//         res.status(500).json({ error: 'Failed to trigger synchronization' });
+//     }
+// });
 
 // Ręczne wywołanie synchronizacji tylko RCL
-app.post('/api/sync/rcl', async (req, res) => {
-    try {
-        console.log('📜 Manual RCL sync triggered via API');
-        const result = await triggerRclSync();
-        res.json({
-            message: 'RCL synchronization completed',
-            result
-        });
-    } catch (error) {
-        console.error('Error triggering RCL sync:', error);
-        res.status(500).json({ error: 'Failed to trigger RCL synchronization' });
-    }
-});
+// app.post('/api/sync/rcl', async (req, res) => {
+//     try {
+//         console.log('📜 Manual RCL sync triggered via API');
+//         const result = await triggerRclSync();
+//         res.json({
+//             message: 'RCL synchronization completed',
+//             result
+//         });
+//     } catch (error) {
+//         console.error('Error triggering RCL sync:', error);
+//         res.status(500).json({ error: 'Failed to trigger RCL synchronization' });
+//     }
+// });
 
-// Status schedulera
-app.get('/api/sync/status', (req, res) => {
-    const status = getSchedulerStatus();
-    res.json(status);
-});
+// // Status schedulera
+// app.get('/api/sync/status', (req, res) => {
+//     const status = getSchedulerStatus();
+//     res.json(status);
+// });
 
 // ==================== DOKUMENTY ====================
 
