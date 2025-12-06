@@ -211,13 +211,13 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
     });
 
     // Jeśli nie znaleziono po numerze, szukaj po tytule
-    if (!existing && title) {
-        const similar = await findBySimilarTitle(title);
-        if (similar) {
-            existing = { id: similar.id };
-            console.log(`   🔗 Linked by similar title: ${similar.title.substring(0, 40)}...`);
-        }
-    }
+    // if (!existing && title) {
+    //     const similar = await findBySimilarTitle(title);
+    //     if (similar) {
+    //         existing = { id: similar.id };
+    //         console.log(`   🔗 Linked by similar title: ${similar.title.substring(0, 40)}...`);
+    //     }
+    // }
 
     // Przygotuj streszczenie z dostępnych pól
     let summary = '';
@@ -371,6 +371,14 @@ export async function syncFromGovPl(): Promise<{ created: number; updated: numbe
             const projects = await fetchGovData(pageId);
 
             for (const project of projects) {
+                // Filtrowanie po roku 2025
+                if (project["Data publikacji"]) {
+                    const pubDate = new Date(project["Data publikacji"].replace(' ', 'T'));
+                    if (!isNaN(pubDate.getTime()) && pubDate.getFullYear() < 2025) {
+                        console.log(`   ⏭️ Skipping old project (${pubDate.getFullYear()}): ${project["Tytuł"].substring(0, 30)}...`);
+                        continue;
+                    }
+                }
                 try {
                     const result = await syncProject(project);
 

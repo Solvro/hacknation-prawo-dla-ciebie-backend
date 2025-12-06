@@ -45,7 +45,51 @@ model LegalDocument {
   relatedFrom       DocumentRelation[] @relation("RelatedFrom")
   relatedTo         DocumentRelation[] @relation("RelatedTo")
 
+  parliamentVotings ParliamentVoting[]
+
   @@map("legal_documents")
+}
+
+// ... (skip to end of file)
+
+// ==================== GŁOSOWANIA PARLAMENTARNE ====================
+
+model ParliamentVoting {
+  id          Int      @id @default(autoincrement())
+  sitting     Int
+  votingNumber Int     @map("voting_number")
+  date        DateTime
+  title       String
+  topic       String?
+  description String?
+  kind        String? 
+  
+  // Wyniki ogólne
+  totalYes    Int      @map("total_yes")
+  totalNo     Int      @map("total_no")
+  totalAbstain Int     @map("total_abstain")
+  notParticipating Int @map("not_participating")
+
+  documentId  Int      @map("document_id")
+  document    LegalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  clubVotes   ClubVote[]
+  
+  @@map("parliament_votings")
+}
+
+model ClubVote {
+  id          Int    @id @default(autoincrement())
+  club        String
+  yes         Int    @default(0)
+  no          Int    @default(0)
+  abstain     Int    @default(0)
+  notParticipating Int @default(0) @map("not_participating")
+  
+  votingId    Int    @map("voting_id")
+  voting      ParliamentVoting @relation(fields: [votingId], references: [id], onDelete: Cascade)
+
+  @@map("club_votes")
 }
 
 // ==================== TYPY ENUM ====================
@@ -183,6 +227,7 @@ model Attachment {
   
   timelineEventId Int    @map("timeline_event_id")
   timelineEvent   TimelineEvent @relation(fields: [timelineEventId], references: [id], onDelete: Cascade)
+  textContent     String? @map("text_content")
 
   @@map("attachments")
 }

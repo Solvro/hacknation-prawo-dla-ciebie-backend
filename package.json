@@ -15,7 +15,8 @@
         "sync:gov": "ts-node src/services/govSync.ts",
         "sync:rcl": "ts-node src/services/rclSync.ts",
         "sync:rcl:full": "ts-node src/services/rclSyncFull.ts",
-        "sync:sejm": "ts-node src/services/sejmSync.ts"
+        "sync:sejm": "ts-node src/services/sejmSync.ts",
+        "analyze": "ts-node src/services/aiAnalysisService.ts"
     },
     "keywords": [
         "prawo",
@@ -29,10 +30,14 @@
     "dependencies": {
         "@prisma/client": "^5.22.0",
         "@supabase/supabase-js": "^2.46.0",
+        "@types/pdf-parse": "^1.1.5",
         "cheerio": "^1.1.2",
         "cors": "^2.8.5",
+        "dotenv": "^17.2.3",
         "express": "^4.21.1",
         "node-cron": "^4.2.1",
+        "openai": "^6.10.0",
+        "pdf-parse": "^2.4.5",
         "zod": "^3.23.8"
     },
     "devDependencies": {

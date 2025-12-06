@@ -305,6 +305,8 @@ export async function fetchStageAttachments(stageUrl: string): Promise<RclAttach
             // Typ pliku
             const ext = href.split('.').pop()?.toLowerCase() || 'unknown';
 
+            if (ext !== 'pdf') return;
+
             attachments.push({
                 name,
                 url: href.startsWith('http') ? href : `${BASE_URL}${href}`,
@@ -659,7 +661,7 @@ export async function syncFromRcl(options: {
                     const yearMatch = project.createdDate.match(/(\d{4})/);
                     if (yearMatch) {
                         const year = parseInt(yearMatch[1]);
-                        if (year < 2023) {
+                        if (year < 2025) {
                             console.log(`   ⏭️ Skipping old project (${year}): ${project.title.substring(0, 30)}...`);
                             continue;
                         }
