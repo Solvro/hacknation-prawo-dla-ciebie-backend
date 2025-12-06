@@ -339,6 +339,185 @@ app.get('/api/stakeholders', async (req, res) => {
 
 // ==================== STATYSTYKI ====================
 
+// ==================== NOWE ENDPOINTY V2 (TYP "LAWMATE") ====================
+
+// Endpoint 1: Lista uchwał (lekki, filtrowanie, sortowanie)
+app.get('/api/v2/documents', async (req, res) => {
+    try {
+        const {
+            level, // 'KRAJOWY' | 'LOKALNY'
+            preconsultations, // 'true' | 'false'
+            sort, // 'last_change' | 'created' | 'likes'
+            tags, // comma separated
+            search // text search
+        } = req.query;
+
+        // 1. Budowanie filtrów (where)
+        const where: any = {};
+
+        // Level
+        if (level) {
+            where.level = level;
+        }
+
+        // Preconsultations (Prekonsultacje)
+        // Zakładamy, że "prekonsultacje" to etap przed pracami w parlamencie, czyli np. PLANOWANY lub KONSULTACJE
+        if (preconsultations === 'true') {
+            where.status = { in: ['PLANOWANY', 'KONSULTACJE'] };
+        } else if (preconsultations === 'false') {
+            // Faza prac legislacyjnych lub zakończone
+            where.status = { notIn: ['PLANOWANY', 'KONSULTACJE'] };
+        }
+
+        // Tagi
+        if (tags) {
+            const tagList = (tags as string).split(',').map(t => t.trim());
+            if (tagList.length > 0) {
+                where.tags = {
+                    some: {
+                        name: { in: tagList, mode: 'insensitive' }
+                    }
+                };
+            }
+        }
+
+        // Search (szukanie po tytule, opisie, autorze, treści)
+        if (search) {
+            const searchStr = search as string;
+            where.OR = [
+                { title: { contains: searchStr, mode: 'insensitive' } },
+                { summary: { contains: searchStr, mode: 'insensitive' } },
+                { status: { contains: searchStr, mode: 'insensitive' } as any }, // rzutowanie dla enumów bywa trudne w prisma, zależy od wersji
+                { responsiblePerson: { name: { contains: searchStr, mode: 'insensitive' } } }
+                // Opcjonalnie search w content, ale to może być wolne
+            ];
+        }
+
+        // 2. Sortowanie (orderBy)
+        let orderBy: any = { updatedAt: 'desc' }; // domyślnie ostatnia zmiana
+
+        if (sort === 'created') {
+            orderBy = { createdAt: 'desc' };
+        } else if (sort === 'likes') {
+            // Sortowanie po relacji votes jest trudniejsze w prostym findMany bez agregacji.
+            // Prisma nie wspiera bezpośredniego sortowania po relacji one-to-one w łatwy sposób w tej wersji,
+            // chyba że pole jest w tabeli głównej.
+            // Obejście: sortujemy w pamięci lub zakładamy, że mamy cache.
+            // Tu zrobimy domyślne, a po likes posortujemy w JS (nieoptymalne dla dużych baz, ale skuteczne na start)
+            orderBy = undefined;
+        } else if (sort === 'last_change') {
+            orderBy = { updatedAt: 'desc' };
+        }
+
+        // 3. Pobranie danych (select - lekki payload)
+        const documents = await prisma.legalDocument.findMany({
+            where,
+            orderBy: orderBy || { updatedAt: 'desc' },
+            select: {
+                id: true,
+                title: true,
+                summary: true,
+                status: true,
+                createdAt: true,
+                updatedAt: true,
+                votes: {
+                    select: { up: true, down: true }
+                },
+                tags: {
+                    select: { name: true }
+                },
+                timeline: {
+                    select: { title: true, date: true }, // tylko nazwa i data bez szczegółów
+                    orderBy: { date: 'asc' }
+                },
+                links: {
+                    select: { url: true, description: true }
+                }
+            }
+        });
+
+        // 4. Post-processing (sortowanie po likes jeśli wybrano)
+        let result = documents.map(doc => ({
+            id: doc.id,
+            title: doc.title,
+            summary: doc.summary,
+            status: doc.status,
+            createdAt: doc.createdAt,
+            lastChange: doc.updatedAt,
+            upvotes: doc.votes?.up || 0,
+            downvotes: doc.votes?.down || 0,
+            tags: doc.tags.map(t => t.name),
+            schedules: doc.timeline.map(t => ({ title: t.title, date: t.date })),
+            links: doc.links
+        }));
+
+        if (sort === 'likes') {
+            result.sort((a, b) => b.upvotes - a.upvotes);
+        }
+
+        res.json(result);
+
+    } catch (error) {
+        console.error('Error in V2 documents endpoint:', error);
+        res.status(500).json({ error: 'Failed to fetch documents V2' });
+    }
+});
+
+// Endpoint 2: Szczegóły dokumentu (Full Info)
+app.get('/api/v2/documents/:id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const document = await prisma.legalDocument.findUnique({
+            where: { id },
+            include: {
+                responsiblePerson: true,
+                votes: true,
+                tags: true,
+                sectors: true,
+                stakeholders: true,
+                links: true,
+                timeline: {
+                    include: { attachments: true },
+                    orderBy: { date: 'asc' }
+                },
+                content: {
+                    include: { opinions: true, comments: { include: { section: true } } },
+                    orderBy: { order: 'asc' }
+                },
+                comments: {
+                    include: { section: true },
+                    orderBy: { createdAt: 'desc' }
+                },
+                aiAnalysis: {
+                    include: {
+                        takeaways: true,
+                        impacts: true,
+                        risks: true,
+                        conflicts: true
+                    }
+                },
+                relatedFrom: true,
+                relatedTo: true,
+                parliamentVotings: {
+                    include: {
+                        clubVotes: true
+                    },
+                    orderBy: { date: 'desc' }
+                }
+            }
+        });
+
+        if (!document) {
+            return res.status(404).json({ error: 'Document not found' });
+        }
+
+        res.json(document);
+    } catch (error) {
+        console.error('Error fetching document detail V2:', error);
+        res.status(500).json({ error: 'Failed to fetch document V2' });
+    }
+});
+
 app.get('/api/stats', async (req, res) => {
     try {
         const [
@@ -401,7 +580,7 @@ app.listen(PORT, () => {
     console.log(`   GET  /api/sync/status\n`);
 
     // Uruchom scheduler synchronizacji z gov.pl
-    if (process.env.NODE_ENV !== 'test') {
-        startScheduler();
-    }
+    // if (process.env.NODE_ENV !== 'test') {
+    // startScheduler();
+    // }
 });
