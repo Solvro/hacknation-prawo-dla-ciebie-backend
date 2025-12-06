@@ -1,0 +1,319 @@
+// Prisma schema for Supabase PostgreSQL
+// https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ==================== GŁÓWNY MODEL DOKUMENTU PRAWNEGO ====================
+
+model LegalDocument {
+  id              Int      @id @default(autoincrement())
+  externalId      Int?     @unique @map("external_id")
+  registryNumber  String   @map("registry_number")
+  printNumber     Int?     @map("print_number")
+  termNumber      Int?     @map("term_number")
+  sejmRplId       String?  @map("sejm_rpl_id") // Id z linku Sejmu RPL (np. RM-0610-167-25)
+  title           String
+  type            DocumentType @default(USTAWA)
+  level           DocumentLevel @default(KRAJOWY)
+  location        String   @default("Polska")
+  status          DocumentStatus @default(DRAFT)
+  summary         String?
+  submittingEntity String? @map("submitting_entity")
+  
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  
+  // Relacje
+  responsiblePerson ResponsiblePerson?
+  votes             Votes?
+  tags              Tag[]
+  sectors           Sector[]
+  stakeholders      Stakeholder[]
+  links             Link[]
+  timeline          TimelineEvent[]
+  content           ContentSection[]
+  comments          Comment[]
+  aiAnalysis        AiAnalysis?
+  relatedFrom       DocumentRelation[] @relation("RelatedFrom")
+  relatedTo         DocumentRelation[] @relation("RelatedTo")
+
+  @@map("legal_documents")
+}
+
+// ==================== TYPY ENUM ====================
+
+enum DocumentType {
+  USTAWA
+  ROZPORZADZENIE
+  UCHWALA
+  OBWIESZCZENIE
+  ZARZADZENIE
+  DYREKTYWA
+  INNE
+}
+
+enum DocumentLevel {
+  KRAJOWY
+  REGIONALNY
+  LOKALNY
+  UE
+  MIEDZYNARODOWY
+}
+
+enum DocumentStatus {
+  DRAFT
+  SEJM
+  SENATE
+  PRESIDENT
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+  EXPIRED
+}
+
+enum TimelineStatus {
+  DRAFT
+  SEJM
+  SENATE
+  PRESIDENT
+  ACCEPTED
+  REJECTED
+}
+
+// ==================== OSOBA ODPOWIEDZIALNA ====================
+
+model ResponsiblePerson {
+  id        Int    @id @default(autoincrement())
+  name      String
+  role      String?
+  email     String?
+  
+  documentId Int   @unique @map("document_id")
+  document   LegalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("responsible_persons")
+}
+
+// ==================== GŁOSY ====================
+
+model Votes {
+  id        Int @id @default(autoincrement())
+  up        Int @default(0)
+  down      Int @default(0)
+  
+  documentId Int @unique @map("document_id")
+  document   LegalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("votes")
+}
+
+// ==================== TAGI, SEKTORY, INTERESARIUSZE ====================
+
+model Tag {
+  id        Int    @id @default(autoincrement())
+  name      String @unique
+  
+  documents LegalDocument[]
+
+  @@map("tags")
+}
+
+model Sector {
+  id        Int    @id @default(autoincrement())
+  name      String @unique
+  
+  documents LegalDocument[]
+
+  @@map("sectors")
+}
+
+model Stakeholder {
+  id        Int    @id @default(autoincrement())
+  name      String @unique
+  
+  documents LegalDocument[]
+
+  @@map("stakeholders")
+}
+
+// ==================== LINKI ====================
+
+model Link {
+  id          Int    @id @default(autoincrement())
+  url         String
+  description String?
+  
+  documentId  Int    @map("document_id")
+  document    LegalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("links")
+}
+
+// ==================== TIMELINE LEGISLACYJNY ====================
+
+model TimelineEvent {
+  id          Int      @id @default(autoincrement())
+  date        DateTime
+  status      TimelineStatus
+  title       String
+  description String?
+  
+  documentId  Int      @map("document_id")
+  document    LegalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  attachments Attachment[]
+
+  @@map("timeline_events")
+}
+
+model Attachment {
+  id              Int    @id @default(autoincrement())
+  name            String
+  title           String?
+  url             String
+  type            String @default("pdf")
+  
+  timelineEventId Int    @map("timeline_event_id")
+  timelineEvent   TimelineEvent @relation(fields: [timelineEventId], references: [id], onDelete: Cascade)
+
+  @@map("attachments")
+}
+
+// ==================== TREŚĆ DOKUMENTU (ARTYKUŁY) ====================
+
+model ContentSection {
+  id          Int      @id @default(autoincrement())
+  externalId  String   @map("external_id")
+  label       String
+  text        String
+  version     Int      @default(1)
+  order       Int
+  lastUpdated DateTime @default(now()) @map("last_updated")
+  
+  documentId  Int      @map("document_id")
+  document    LegalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  opinions    Opinion[]
+  comments    Comment[]
+
+  @@unique([documentId, externalId])
+  @@map("content_sections")
+}
+
+model Opinion {
+  id          Int    @id @default(autoincrement())
+  text        String
+  upvotes     Int    @default(0)
+  downvotes   Int    @default(0)
+  
+  sectionId   Int    @map("section_id")
+  section     ContentSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@map("opinions")
+}
+
+// ==================== KOMENTARZE ====================
+
+model Comment {
+  id          Int      @id @default(autoincrement())
+  externalId  String?  @unique @map("external_id")
+  text        String
+  isAnonymous Boolean  @default(false) @map("is_anonymous")
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  authorName  String?  @map("author_name")
+  authorEmail String?  @map("author_email")
+  
+  documentId  Int      @map("document_id")
+  document    LegalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  sectionId   Int?     @map("section_id")
+  section     ContentSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+
+  @@map("comments")
+}
+
+// ==================== ANALIZA AI ====================
+
+model AiAnalysis {
+  id          Int    @id @default(autoincrement())
+  sentiment   Float  @default(0)
+  
+  documentId  Int    @unique @map("document_id")
+  document    LegalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  takeaways   AiTakeaway[]
+  impacts     AiImpact[]
+  risks       AiRisk[]
+  conflicts   AiConflict[]
+
+  @@map("ai_analyses")
+}
+
+model AiTakeaway {
+  id          Int    @id @default(autoincrement())
+  text        String
+  
+  analysisId  Int    @map("analysis_id")
+  analysis    AiAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@map("ai_takeaways")
+}
+
+model AiImpact {
+  id          Int    @id @default(autoincrement())
+  category    String
+  description String
+  
+  analysisId  Int    @map("analysis_id")
+  analysis    AiAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@map("ai_impacts")
+}
+
+model AiRisk {
+  id          Int    @id @default(autoincrement())
+  description String
+  
+  analysisId  Int    @map("analysis_id")
+  analysis    AiAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@map("ai_risks")
+}
+
+model AiConflict {
+  id          Int    @id @default(autoincrement())
+  description String
+  
+  analysisId  Int    @map("analysis_id")
+  analysis    AiAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@map("ai_conflicts")
+}
+
+// ==================== RELACJE MIĘDZY DOKUMENTAMI ====================
+
+model DocumentRelation {
+  id          Int    @id @default(autoincrement())
+  title       String
+  url         String?
+  context     String?
+  
+  fromDocumentId Int @map("from_document_id")
+  fromDocument   LegalDocument @relation("RelatedFrom", fields: [fromDocumentId], references: [id], onDelete: Cascade)
+  
+  toDocumentId   Int? @map("to_document_id")
+  toDocument     LegalDocument? @relation("RelatedTo", fields: [toDocumentId], references: [id], onDelete: SetNull)
+  
+  externalDocumentId String? @map("external_document_id")
+
+  @@map("document_relations")
+}

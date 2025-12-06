@@ -1,0 +1,51 @@
+{
+    "name": "prawo-dla-ciebie",
+    "version": "1.0.0",
+    "description": "System zarządzania dokumentami prawnymi z Supabase",
+    "main": "dist/index.js",
+    "scripts": {
+        "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+        "build": "tsc",
+        "start": "node dist/index.js",
+        "prisma:generate": "prisma generate",
+        "prisma:push": "prisma db push",
+        "prisma:migrate": "prisma migrate dev",
+        "prisma:studio": "prisma studio",
+        "seed": "ts-node prisma/seed.ts",
+        "sync:gov": "ts-node src/services/govSync.ts",
+        "sync:rcl": "ts-node src/services/rclSync.ts",
+        "sync:rcl:full": "ts-node src/services/rclSyncFull.ts",
+        "sync:sejm": "ts-node src/services/sejmSync.ts"
+    },
+    "keywords": [
+        "prawo",
+        "legislacja",
+        "sejm",
+        "prisma",
+        "supabase"
+    ],
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "@prisma/client": "^5.22.0",
+        "@supabase/supabase-js": "^2.46.0",
+        "cheerio": "^1.1.2",
+        "cors": "^2.8.5",
+        "express": "^4.21.1",
+        "node-cron": "^4.2.1",
+        "zod": "^3.23.8"
+    },
+    "devDependencies": {
+        "@types/cors": "^2.8.17",
+        "@types/express": "^5.0.0",
+        "@types/node": "^22.9.0",
+        "@types/node-cron": "^3.0.11",
+        "prisma": "^5.22.0",
+        "ts-node": "^10.9.2",
+        "ts-node-dev": "^2.0.0",
+        "typescript": "^5.6.3"
+    },
+    "prisma": {
+        "seed": "ts-node prisma/seed.ts"
+    }
+}
