@@ -13,9 +13,9 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ==================== SYNCHRONIZACJA ====================
+// ==================== SYNCHRONIZATION ====================
 
-// Ręczne wywołanie pełnej synchronizacji (gov.pl + RCL)
+// Trigger full synchronization manually (gov.pl + RCL)
 // app.post('/api/sync/trigger', async (req, res) => {
 //     try {
 //         console.log('📡 Manual full sync triggered via API');
@@ -30,7 +30,7 @@ app.get('/health', (req, res) => {
 //     }
 // });
 
-// Ręczne wywołanie synchronizacji tylko RCL
+// Trigger RCL only manual sync
 // app.post('/api/sync/rcl', async (req, res) => {
 //     try {
 //         console.log('📜 Manual RCL sync triggered via API');
@@ -45,15 +45,15 @@ app.get('/health', (req, res) => {
 //     }
 // });
 
-// // Status schedulera
-// app.get('/api/sync/status', (req, res) => {
-//     const status = getSchedulerStatus();
-//     res.json(status);
-// });
+// // Scheduler status
+// // app.get('/api/sync/status', (req, res) => {
+// //     const status = getSchedulerStatus();
+// //     res.json(status);
+// // });
 
-// ==================== DOKUMENTY ====================
+// ==================== DOCUMENTS ====================
 
-// Pobierz wszystkie dokumenty
+// Get all documents
 app.get('/api/documents', async (req, res) => {
     try {
         const documents = await prisma.legalDocument.findMany({
@@ -92,7 +92,7 @@ app.get('/api/documents', async (req, res) => {
     }
 });
 
-// Pobierz pojedynczy dokument
+// Get single document
 app.get('/api/documents/:id', async (req, res) => {
     try {
         const id = parseInt(req.params.id);
@@ -137,7 +137,7 @@ app.get('/api/documents/:id', async (req, res) => {
     }
 });
 
-// Wyszukiwanie dokumentów
+// Search documents
 app.get('/api/search', async (req, res) => {
     try {
         const { q, status, type, tag, sector } = req.query;
@@ -173,13 +173,13 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// ==================== GŁOSOWANIE ====================
+// ==================== VOTING ====================
 
-// Głosuj na dokument
+// Vote on document
 app.post('/api/documents/:id/vote', async (req, res) => {
     try {
         const id = parseInt(req.params.id);
-        const { type } = req.body; // 'up' lub 'down'
+        const { type } = req.body; // 'up' or 'down'
 
         if (!['up', 'down'].includes(type)) {
             return res.status(400).json({ error: 'Invalid vote type. Use "up" or "down"' });
@@ -204,7 +204,7 @@ app.post('/api/documents/:id/vote', async (req, res) => {
     }
 });
 
-// Głosuj na opinię
+// Vote on opinion
 app.post('/api/opinions/:id/vote', async (req, res) => {
     try {
         const id = parseInt(req.params.id);
@@ -227,9 +227,9 @@ app.post('/api/opinions/:id/vote', async (req, res) => {
     }
 });
 
-// ==================== KOMENTARZE ====================
+// ==================== COMMENTS ====================
 
-// Dodaj komentarz do dokumentu
+// Add comment to document
 app.post('/api/documents/:id/comments', async (req, res) => {
     try {
         const documentId = parseInt(req.params.id);
@@ -239,7 +239,7 @@ app.post('/api/documents/:id/comments', async (req, res) => {
             return res.status(400).json({ error: 'Comment text is required' });
         }
 
-        // Znajdź sekcję jeśli podano
+        // Find section if provided
         let sectionId: number | null = null;
         if (sectionExternalId) {
             const section = await prisma.contentSection.findFirst({
@@ -268,7 +268,7 @@ app.post('/api/documents/:id/comments', async (req, res) => {
     }
 });
 
-// Pobierz komentarze dokumentu
+// Get document comments
 app.get('/api/documents/:id/comments', async (req, res) => {
     try {
         const documentId = parseInt(req.params.id);
@@ -286,9 +286,9 @@ app.get('/api/documents/:id/comments', async (req, res) => {
     }
 });
 
-// ==================== TAGI I FILTRY ====================
+// ==================== TAGS AND FILTERS ====================
 
-// Pobierz wszystkie tagi
+// Get all tags
 app.get('/api/tags', async (req, res) => {
     try {
         const tags = await prisma.tag.findMany({
@@ -304,7 +304,7 @@ app.get('/api/tags', async (req, res) => {
     }
 });
 
-// Pobierz wszystkie sektory
+// Get all sectors
 app.get('/api/sectors', async (req, res) => {
     try {
         const sectors = await prisma.sector.findMany({
@@ -320,7 +320,7 @@ app.get('/api/sectors', async (req, res) => {
     }
 });
 
-// Pobierz wszystkich interesariuszy
+// Get all stakeholders
 app.get('/api/stakeholders', async (req, res) => {
     try {
         const stakeholders = await prisma.stakeholder.findMany({
@@ -336,11 +336,11 @@ app.get('/api/stakeholders', async (req, res) => {
     }
 });
 
-// ==================== STATYSTYKI ====================
+// ==================== STATISTICS ====================
 
-// ==================== NOWE ENDPOINTY V2 (TYP "LAWMATE") ====================
+// ==================== NEW ENDPOINTS V2 (TYPE "LAWMATE") ====================
 
-// Endpoint 1: Lista uchwał (lekki, filtrowanie, sortowanie)
+// Endpoint 1: List resolutions (lightweight, filtering, sorting)
 app.get('/api/v2/documents', async (req, res) => {
     try {
         const {
@@ -357,7 +357,7 @@ app.get('/api/v2/documents', async (req, res) => {
         const limitNum = Math.max(1, Math.min(100, parseInt(limit as string) || 20)); // Max 100 items per page
         const skip = (pageNum - 1) * limitNum;
 
-        // 1. Budowanie filtrów (where)
+        // 1. Build filters (where)
         const where: any = {};
 
         // Level
@@ -365,16 +365,16 @@ app.get('/api/v2/documents', async (req, res) => {
             where.level = level;
         }
 
-        // Preconsultations (Prekonsultacje)
-        // Zakładamy, że "prekonsultacje" to etap przed pracami w parlamencie, czyli np. PLANOWANY lub KONSULTACJE
+        // Preconsultations
+        // We assume "preconsultations" is a stage before parliament work, e.g. PLANOWANY or KONSULTACJE
         if (preconsultations === 'true') {
             where.status = { in: ['PLANOWANY', 'KONSULTACJE'] };
         } else if (preconsultations === 'false') {
-            // Faza prac legislacyjnych lub zakończone
+            // Legislative process phase or finished
             where.status = { notIn: ['PLANOWANY', 'KONSULTACJE'] };
         }
 
-        // Tagi
+        // Tags
         if (tags) {
             const tagList = (tags as string).split(',').map(t => t.trim());
             if (tagList.length > 0) {
@@ -386,7 +386,7 @@ app.get('/api/v2/documents', async (req, res) => {
             }
         }
 
-        // Search (szukanie po tytule, opisie, autorze, treści)
+        // Search (search by title, summary, author, content(status))
         if (search) {
             const searchStr = search as string;
             where.OR = [
@@ -397,10 +397,10 @@ app.get('/api/v2/documents', async (req, res) => {
             ];
         }
 
-        // Liczymy całkowitą ilość pasujących dokumentów (dla meta-danych)
+        // Count total matching documents (for metadata)
         const totalCount = await prisma.legalDocument.count({ where });
 
-        // 2. Sortowanie i Pobieranie danych
+        // 2. Sorting and Fetching data
         let items: any[] = [];
         let orderBy: any = undefined;
 
@@ -409,11 +409,11 @@ app.get('/api/v2/documents', async (req, res) => {
         } else if (sort === 'last_change' || !sort) {
             orderBy = { updatedAt: 'desc' };
         }
-        // Jeśli sort === 'likes', orderBy zostaje undefined, pobierzemy wszystko i posortujemy w RAMie
+        // If sort === 'likes', orderBy remains undefined, we fetch all and sort in RAM
 
         if (sort === 'likes') {
-            // Strategia dla 'likes': Pobierz wszystko (pasujące do filtrów), posortuj w pamięci, wytnij stronę
-            // Uwaga: Przy bardzo dużej bazie to będzie niewydajne. W przyszłości dodać indeks/pole 'upvotesCount'.
+            // Strategy for 'likes': Fetch all matching (filtered), sort in memory, slice page
+            // Note: Inefficient for very large DB. Future: add index/column 'upvotesCount'.
             const allDocuments = await prisma.legalDocument.findMany({
                 where,
                 select: {
@@ -436,7 +436,7 @@ app.get('/api/v2/documents', async (req, res) => {
                 }
             });
 
-            // Post-processing i sortowanie
+            // Post-processing and sorting
             const mapped = allDocuments.map(doc => ({
                 id: doc.id,
                 title: doc.title,
@@ -456,11 +456,11 @@ app.get('/api/v2/documents', async (req, res) => {
 
             mapped.sort((a, b) => b.upvotes - a.upvotes);
 
-            // Paginacja w pamięci
+            // In-memory pagination
             items = mapped.slice(skip, skip + limitNum);
 
         } else {
-            // Standardowa strategia DB pagination
+            // Standard DB pagination strategy
             const documents = await prisma.legalDocument.findMany({
                 where,
                 orderBy: orderBy,
@@ -504,7 +504,7 @@ app.get('/api/v2/documents', async (req, res) => {
             }));
         }
 
-        // 3. Budowanie odpowiedzi
+        // 3. Build response
         const totalPages = Math.ceil(totalCount / limitNum);
 
         res.json({
@@ -523,7 +523,7 @@ app.get('/api/v2/documents', async (req, res) => {
     }
 });
 
-// Endpoint 2: Szczegóły dokumentu (Full Info)
+// Endpoint 2: Document details (Full Info)
 app.get('/api/v2/documents/:id', async (req, res) => {
     try {
         const id = parseInt(req.params.id);
@@ -639,7 +639,7 @@ app.listen(PORT, () => {
     console.log(`   POST /api/sync/trigger`);
     console.log(`   GET  /api/sync/status\n`);
 
-    // Uruchom scheduler synchronizacji z gov.pl
+    // Run scheduler for gov.pl sync
     // if (process.env.NODE_ENV !== 'test') {
     // startScheduler();
     // }

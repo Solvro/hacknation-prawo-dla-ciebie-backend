@@ -2,7 +2,7 @@ import { prisma } from '../lib/prisma';
 import { areTitlesSimilar, levenshteinDistance } from '../utils/stringComparison';
 import { DocumentType, DocumentLevel, DocumentStatus, TimelineStatus } from '@prisma/client';
 
-// Interfejs dla danych z API gov.pl
+// Interface for gov.pl API data
 interface GovProject {
     "Tytuł": string;
     "pageId": string;
@@ -26,7 +26,7 @@ interface GovProject {
     "Cele projektu oraz informacja o przyczynach i potrzebie rozwiązań planowanych w projekcie"?: string;
 }
 
-// Mapowanie typu dokumentu
+// Document type mapping
 function parseDocumentType(rodzaj?: string): DocumentType {
     if (!rodzaj) return DocumentType.INNE;
 
@@ -40,7 +40,7 @@ function parseDocumentType(rodzaj?: string): DocumentType {
     return DocumentType.INNE;
 }
 
-// Parsowanie statusu
+// Parse status
 function parseStatus(statusJson?: string): DocumentStatus {
     if (!statusJson) return DocumentStatus.DRAFT;
 
@@ -59,7 +59,7 @@ function parseStatus(statusJson?: string): DocumentStatus {
     return DocumentStatus.DRAFT;
 }
 
-// Parsowanie JSON array string do tekstu
+// Parse JSON array string to text
 function parseJsonArrayToString(jsonStr?: string): string | null {
     if (!jsonStr) return null;
 
@@ -75,7 +75,7 @@ function parseJsonArrayToString(jsonStr?: string): string | null {
     return null;
 }
 
-// Ekstrakcja tagów z tytułu i treści
+// Extract tags from title and content
 function extractTags(project: GovProject): string[] {
     const tags: Set<string> = new Set();
     const title = project["Tytuł"]?.toLowerCase() || '';
@@ -92,7 +92,7 @@ function extractTags(project: GovProject): string[] {
     if (title.includes('cyfryzac') || title.includes('cyfrowy')) tags.add('cyfryzacja');
     if (title.includes('mediów') || title.includes('mediow') || title.includes('telewiz') || title.includes('radio')) tags.add('media');
 
-    // Parsuj organ odpowiedzialny
+    // Parse responsible body
     const organ = parseJsonArrayToString(project["Organ odpowiedzialny za opracowanie projektu"]);
     if (organ) {
         tags.add(organ);
@@ -101,7 +101,7 @@ function extractTags(project: GovProject): string[] {
     return Array.from(tags);
 }
 
-// Ekstrakcja sektorów
+// Extract sectors
 function extractSectors(project: GovProject): string[] {
     const sectors: Set<string> = new Set();
     const title = project["Tytuł"]?.toLowerCase() || '';
@@ -149,7 +149,7 @@ function parseResponsiblePerson(raw: string): { name: string, role: string | nul
     return { name, role };
 }
 
-// Funkcja pomocnicza do upsert taga
+// Helper to upsert tag
 async function getOrCreateTag(name: string) {
     return prisma.tag.upsert({
         where: { name },
@@ -158,7 +158,7 @@ async function getOrCreateTag(name: string) {
     });
 }
 
-// Funkcja pomocnicza do upsert sektora
+// Helper to upsert sector
 async function getOrCreateSector(name: string) {
     return prisma.sector.upsert({
         where: { name },
@@ -167,7 +167,7 @@ async function getOrCreateSector(name: string) {
     });
 }
 
-// Szukaj dokumentu przez podobieństwo tytułu
+// Search document by title similarity
 async function findBySimilarTitle(title: string): Promise<{ id: number; title: string } | null> {
     const titleParts = [];
     if (title.length > 15) {
@@ -206,35 +206,24 @@ async function findBySimilarTitle(title: string): Promise<{ id: number; title: s
     return bestMatch;
 }
 
-// Główna funkcja synchronizacji pojedynczego projektu
+// Main sync function for single project
 async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
     const pageId = project.pageId;
 
-    // Przygotuj numer projektu (główny identyfikator)
+    // Prepare project number (main identifier)
     const registryNumber = project["Numer Projektu"] || project["Numer projektu"] || `GOV-${pageId}`;
     const title = project["Tytuł"];
     const rodzajDoc = parseJsonArrayToString(project["Rodzaj dokumentu"]);
     const type = parseDocumentType(rodzajDoc || title);
     const status = parseStatus(project["Status realizacji"]);
 
-    // Sprawdź, czy dokument już istnieje po numerze projektu (registryNumber)
-    // Sprawdź, czy dokument już istnieje po numerze projektu (registryNumber)
+    // Check if document exists by registry number
     let existing = await prisma.legalDocument.findFirst({
         where: { registryNumber },
         select: { id: true }
     });
 
-    // Jeśli nie znaleziono po numerze, szukaj po tytule
-    // if (!existing && title) {
-    //     const similar = await findBySimilarTitle(title);
-    //     if (similar) {
-    //         existing = { id: similar.id };
-    //         console.log(`   🔗 Linked by similar title: ${similar.title.substring(0, 40)}...`);
-    //     }
-    // }
-
-    // Przygotuj streszczenie z dostępnych pól
-    // Przygotuj streszczenie z dostępnych pól (priorytet: Cele projektu)
+    // Prepare summary from available fields (priority: Goals)
     const goalInfo = project["Cele projektu oraz informacja o przyczynach i potrzebie rozwiązań planowanych w projekcie"] || '';
     const essenceInfo = project["Istota rozwiązań planowanych w projekcie, w tym proponowane środki realizacji"] || '';
 
@@ -254,19 +243,19 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
         contentSource = goalInfo || essenceInfo;
     }
 
-    // Ogranicz długość streszczenia
+    // Limit summary length
     if (summary.length > 5000) {
         summary = summary.substring(0, 4997) + '...';
     }
 
-    // Przygotuj tagi i sektory
+    // Prepare tags and sectors
     const tagNames = extractTags(project);
     const sectorNames = extractSectors(project);
 
     const tags = await Promise.all(tagNames.map(t => getOrCreateTag(t)));
     const sectors = await Promise.all(sectorNames.map(s => getOrCreateSector(s)));
 
-    // Parsuj datę publikacji
+    // Parse publication date
     let createdAt: Date | undefined;
     if (project["Data publikacji"]) {
         createdAt = new Date(project["Data publikacji"].replace(' ', 'T'));
@@ -276,13 +265,12 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
     }
 
     // --- GOV.PL CONTENT PROCESSING (VERSION 1) ---
-    // Wstaw "Istota rozwiązań..." jako zawartość (wersja 1)
-    // Wstaw contentSource jako zawartość (wersja 1)
+    // Insert "Essence of solutions..." as content (version 1)
     let documentId: number;
 
     if (existing) {
         documentId = existing.id;
-        // Aktualizuj istniejący dokument - odłącz stare relacje i podłącz nowe
+        // Update existing document - disconnect old relations and connect new ones
         await prisma.legalDocument.update({
             where: { id: existing.id },
             data: {
@@ -300,7 +288,7 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
         });
         console.log(`   📝 Updated: ${title.substring(0, 60)}...`);
     } else {
-        // Utwórz nowy dokument
+        // Create new document
         const document = await prisma.legalDocument.create({
             data: {
                 registryNumber,
@@ -318,7 +306,7 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
         });
         documentId = document.id;
 
-        // Dodaj osobę odpowiedzialną jeśli istnieje
+        // Add responsible person if exists
         if (project["Osoba odpowiedzialna za opracowanie projektu"]) {
             const rawPerson = project["Osoba odpowiedzialna za opracowanie projektu"];
             const { name, role } = parseResponsiblePerson(rawPerson);
@@ -332,18 +320,18 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
             });
         }
 
-        // Dodaj link do strony gov.pl
+        // Add link to gov.pl page
         if (project.pageUrl) {
             await prisma.link.create({
                 data: {
                     url: `https://www.gov.pl${project.pageUrl}`,
-                    description: 'Strona projektu na gov.pl',
+                    description: 'Project page on gov.pl',
                     documentId: document.id
                 }
             });
         }
 
-        // Inicjalizuj głosy
+        // Init votes
         await prisma.votes.create({
             data: {
                 up: 0,
@@ -352,7 +340,7 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
             }
         });
 
-        // Dodaj podstawową analizę AI
+        // Add basic AI analysis
         await prisma.aiAnalysis.create({
             data: {
                 sentiment: 0,
@@ -360,19 +348,18 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
             }
         });
 
-        // Dodaj zdarzenie powstania
-        // Dodaj zdarzenie powstania
+        // Add creation event
         await prisma.timelineEvent.create({
             data: {
-                title: "Utworzono wpis w gov.pl",
+                title: "Created entry in gov.pl",
                 date: createdAt || new Date(),
                 status: TimelineStatus.DRAFT,
-                description: "Projekt został opublikowany w serwisie gov.pl",
+                description: "Project was published in gov.pl service",
                 documentId: document.id
             }
         });
 
-        // Dodaj status z pola "Status realizacji" do timeline
+        // Add status from "Status realizacji" field to timeline
         const statusDesc = parseJsonArrayToString(project["Status realizacji"]);
         if (statusDesc) {
             await prisma.timelineEvent.create({
@@ -380,7 +367,7 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
                     title: statusDesc,
                     date: createdAt || new Date(),
                     status: TimelineStatus.DRAFT,
-                    description: `Status realizacji: ${statusDesc}`,
+                    description: `Implementation status: ${statusDesc}`,
                     documentId: document.id
                 }
             });
@@ -391,12 +378,12 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
 
     // UPDATE CONTENT FOR BOTH NEW AND EXISTING DOCUMENTS
     if (contentSource && contentSource.length > 0) {
-        // Podziel na akapity
+        // Split into paragraphs
         const paragraphs = contentSource.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0);
 
         if (paragraphs.length > 0) {
-            // Opcjonalnie: czyścimy stare sekcje dla wersji 1, żeby nie dublować przy update
-            // Uwaga: To usunie stare sekcje wersji 1.
+            // Optional: clean old sections for version 1, to avoid duplication on update
+            // Note: This removes old version 1 sections.
             await prisma.contentSection.deleteMany({
                 where: {
                     documentId: documentId,
@@ -404,13 +391,13 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
                 }
             });
 
-            // Zapisz ContentSections
+            // Save ContentSections
             for (let i = 0; i < paragraphs.length; i++) {
                 await prisma.contentSection.create({
                     data: {
                         documentId: documentId,
                         externalId: `gov-${documentId}-v1-${i}`,
-                        label: `Akapit ${i + 1}`,
+                        label: `Paragraph ${i + 1}`,
                         text: paragraphs[i],
                         version: 1,
                         order: i
@@ -418,7 +405,7 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
                 });
             }
 
-            // Zaktualizuj latestContent
+            // Update latestContent
             await prisma.legalDocument.update({
                 where: { id: documentId },
                 data: { latestContent: contentSource }
@@ -430,7 +417,7 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
     return { isNew: !existing };
 }
 
-// Funkcja fetchująca dane z API gov.pl
+// Function fetching data from gov.pl API
 async function fetchGovData(pageId: string): Promise<GovProject[]> {
     const url = `https://www.gov.pl/api/data/registers/search?pageId=${pageId}`;
 
@@ -458,14 +445,14 @@ async function fetchGovData(pageId: string): Promise<GovProject[]> {
     return data;
 }
 
-// Główna funkcja synchronizacji
+// Main sync function
 export async function syncFromGovPl(): Promise<{ created: number; updated: number; errors: number }> {
     console.log('\n🔄 Starting synchronization with gov.pl API...');
     console.log('━'.repeat(60));
 
     const stats = { created: 0, updated: 0, errors: 0 };
 
-    // Lista endpoint IDs do synchronizacji
+    // List of endpoint IDs to sync
     // '20874196'
     const pageIds = ['20874195'];
 
@@ -474,7 +461,7 @@ export async function syncFromGovPl(): Promise<{ created: number; updated: numbe
             const projects = await fetchGovData(pageId);
 
             for (const project of projects) {
-                // Filtrowanie po roku 2025
+                // Filter by year 2025
                 if (project["Data publikacji"]) {
                     const pubDate = new Date(project["Data publikacji"].replace(' ', 'T'));
                     if (!isNaN(pubDate.getTime()) && pubDate.getFullYear() < 2025) {
@@ -510,7 +497,7 @@ export async function syncFromGovPl(): Promise<{ created: number; updated: numbe
     return stats;
 }
 
-// Uruchom synchronizację jeśli wywołano bezpośrednio
+// Run sync if called directly
 if (require.main === module) {
     syncFromGovPl()
         .then(() => process.exit(0))

@@ -34,6 +34,7 @@
         "@supabase/supabase-js": "^2.46.0",
         "@types/pdf-parse": "^1.1.5",
         "ai": "^5.0.108",
+        "axios": "^1.13.2",
         "cheerio": "^1.1.2",
         "cors": "^2.8.5",
         "dotenv": "^17.2.3",
@@ -42,6 +43,7 @@
         "node-cron": "^4.2.1",
         "openai": "^6.10.0",
         "pdf-parse": "^2.4.5",
+        "puppeteer": "^24.32.0",
         "zod": "^3.25.76"
     },
     "devDependencies": {

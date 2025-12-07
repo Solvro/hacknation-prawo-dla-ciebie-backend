@@ -1,23 +1,26 @@
 /**
- * Synchronizacja z API Sejmu
- * Pobiera procesy legislacyjne z https://api.sejm.gov.pl/sejm/term10/processes/:id
- * i łączy je z dokumentami w bazie (przez rclNum lub podobieństwo tytułów).
+ * Synchronization with Sejm API
+ * Fetches legislative processes from https://api.sejm.gov.pl/sejm/term10/processes/:id
+ * and links them with documents in the database (via rclNum or title similarity).
  * 
- * Implementuje również pobieranie szczegółowych danych z komisji (stenogramy, wideo)
- * oraz głosowań.
+ * It also implements fetching detailed data from committees (transcripts, videos)
+ * and votings.
  */
 
+import * as cheerio from 'cheerio';
+import * as fs from 'fs';
+import puppeteer from 'puppeteer';
 import { prisma } from '../lib/prisma';
 import { areTitlesSimilar, levenshteinDistance } from '../utils/stringComparison';
 import { DocumentType, DocumentLevel, DocumentStatus, TimelineStatus } from '@prisma/client';
 
 const SEJM_API_BASE = 'https://api.sejm.gov.pl/sejm/term10';
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 // Rate limiting
 const REQUEST_DELAY = 200;
 
-// Interfejsy dla API Sejmu
+// Sejm API Interfaces
 interface SejmProcess {
     number: string;
     title: string;
@@ -31,7 +34,7 @@ interface SejmProcess {
     changeDate?: string;
     passed?: boolean;
     term: number;
-    rclNum?: string; // Numer RCL np. "RM-0610-147-25"
+    rclNum?: string; // RCL Number e.g. "RM-0610-147-25"
     rclLink?: string;
     ELI?: string;
     displayAddress?: string;
@@ -48,7 +51,7 @@ interface SejmStage {
     comment?: string;
     printNumber?: string;
     sittingNum?: number;
-    committee?: string; // Kod komisji np. "ASW"
+    committee?: string; // Committee code e.g. "ASW"
     children?: SejmStageChild[];
 }
 
@@ -177,6 +180,94 @@ async function fetchCommitteeSitting(term: number, committeeCode: string, date: 
     }
 }
 
+async function fetchExtraCommitteeData(printNum: string): Promise<any[]> {
+    const url = `https://www.sejm.gov.pl/SQL2.nsf/poskomprocall?OpenAgent&10&${printNum}`;
+    console.log(`      🕵️ Fetching extra committee data via Puppeteer from: ${url}`);
+
+    let browser;
+    try {
+        browser = await puppeteer.launch({
+            headless: true, // Use headless in production mostly
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+        const page = await browser.newPage();
+        await page.setUserAgent(USER_AGENT);
+
+        await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
+
+        // Wait for JS execution
+        await new Promise(r => setTimeout(r, 2000));
+
+        // Refresh the page as requested
+        console.log('      🔄 Refreshing page...');
+        await page.reload({ waitUntil: 'networkidle0' });
+
+        // Wait again after refresh
+        await new Promise(r => setTimeout(r, 2000));
+
+        const html = await page.content();
+        await browser.close();
+        browser = null; // Clear browser reference so catch block doesn't try to close it again if not needed
+
+        // Debug: Save HTML to file
+        // fs.writeFileSync('sejm_extra_debug.html', html);
+        // console.log(`      💾 Saved HTML to sejm_extra_debug.html`);
+
+        const $ = cheerio.load(html);
+        const meetings: any[] = [];
+
+        // Check for specific Sejm table structure
+        // Often these are tables with class 'kom' or simply tables in the body
+        // Based on the user provided HTML, it's a table with class="kom"
+        $('table.kom tr').each((_, tr) => {
+            const $tr = $(tr);
+            const tds = $tr.find('td');
+            if (tds.length === 0) return; // Skip headers
+
+            // Heuristic to extract date from the second column (Committee Sitting)
+            // Example: <img ...> 23-04-2025 <br> (ESK)
+            const committeeCell = $(tds[1]).text().trim();
+            const dateMatch = committeeCell.match(/(\d{2}-\d{2}-\d{4})/);
+
+            if (dateMatch) {
+                const date = dateMatch[1];
+                // Convert DD-MM-YYYY to YYYY-MM-DD
+                const [d, m, y] = date.split('-');
+                const isoDate = `${y}-${m}-${d}`;
+
+                const links: { title: string, url: string }[] = [];
+
+                $tr.find('a').each((_, a) => {
+                    const href = $(a).attr('href');
+                    const linkText = $(a).text().trim() || $(a).attr('title') || 'Link';
+
+                    if (href && !href.startsWith('javascript')) {
+                        let fullUrl = href;
+                        if (!href.startsWith('http')) {
+                            fullUrl = `https://www.sejm.gov.pl${href}`;
+                        }
+
+                        // Filter out generic links if needed, but keeping them is safer
+                        links.push({ title: linkText, url: fullUrl });
+                    }
+                });
+
+                if (links.length > 0) {
+                    meetings.push({ date: isoDate, links });
+                }
+            }
+        });
+
+        console.log(`      ✅ Found ${meetings.length} meetings/rows in extra table.`);
+        return meetings;
+
+    } catch (err: any) {
+        if (browser) await browser.close();
+        console.error(`      ❌ Error fetching extra committee data (Puppeteer):`, err.message);
+        return [];
+    }
+}
+
 // --- Parsers ---
 
 function parseDocumentType(docType: string): DocumentType {
@@ -293,6 +384,7 @@ async function syncSejmProcess(process: SejmProcess): Promise<{ isNew: boolean; 
         await ensureSejmLink(existing.id, process.number);
         await processStages(existing.id, process);
         await handleCommitteeStages(existing.id, process);
+        await handleExtraCommitteeData(existing.id, process.number);
 
         return { isNew: false, updated: true, linked: !!process.rclNum };
     } else {
@@ -314,25 +406,26 @@ async function syncSejmProcess(process: SejmProcess): Promise<{ isNew: boolean; 
 
         await ensureSejmLink(document.id, process.number);
 
-        // Linki ELI/ISAP
+        // Links ELI/ISAP
         if (process.links) {
             for (const link of process.links.slice(0, 5)) {
                 await prisma.link.create({
                     data: {
                         url: link.href,
-                        description: `${link.rel.toUpperCase()} - System prawny`,
+                        description: `${link.rel.toUpperCase()} - Legal System`,
                         documentId: document.id
                     }
                 });
             }
         }
 
-        // Inity
+        // Init
         await prisma.votes.create({ data: { up: 0, down: 0, documentId: document.id } });
         await prisma.aiAnalysis.create({ data: { sentiment: 0, documentId: document.id } });
 
         await processStages(document.id, process);
         await handleCommitteeStages(document.id, process);
+        await handleExtraCommitteeData(document.id, process.number);
 
         console.log(`   ✅ Created: ${process.title.substring(0, 50)}...`);
         return { isNew: true, updated: false, linked: false };
@@ -346,7 +439,7 @@ async function ensureSejmLink(documentId: number, printNumber: string) {
         await prisma.link.create({
             data: {
                 url: sejmLink,
-                description: `Przebieg procesu legislacyjnego w Sejmie (druk nr ${printNumber})`,
+                description: `Legislative process in Sejm (print no. ${printNumber})`,
                 documentId
             }
         });
@@ -367,7 +460,7 @@ async function processStages(documentId: number, process: SejmProcess) {
                     date: parseDate(stage.date),
                     status: parseTimelineStatus(stage.stageName),
                     title: stage.stageName,
-                    description: stage.decision || stage.comment || `Etap: ${stage.stageName}`,
+                    description: stage.decision || stage.comment || `Stage: ${stage.stageName}`,
                     documentId
                 }
             });
@@ -379,12 +472,10 @@ async function processStages(documentId: number, process: SejmProcess) {
     }
 }
 
-// --- Specific Handlers ---
-
 async function handleVotingsAndVideos(documentId: number, process: SejmProcess, stage: SejmStage) {
     if (!stage.sittingNum) return;
 
-    // 1. Głosowania
+    // 1. Votings
     for (const child of stage.children || []) {
         if (child.voting) {
             const listUrl = `${SEJM_API_BASE}/votings/${stage.sittingNum}`;
@@ -411,7 +502,7 @@ async function handleVotingsAndVideos(documentId: number, process: SejmProcess, 
         }
     }
 
-    // 2. Wideo (Posiedzenia plenarne)
+    // 2. Videos (Plenary Sittings)
     const videos = await fetchVideos(process.term, stage.sittingNum);
     const relevantVideos = videos.filter(v =>
         (v.title && v.title.includes(`druk nr ${process.number}`)) ||
@@ -426,11 +517,84 @@ async function handleVotingsAndVideos(documentId: number, process: SejmProcess, 
             await prisma.link.create({
                 data: {
                     url: videoUrl,
-                    description: `Transmisja: ${video.title} (${video.time})`,
+                    description: `Transmission: ${video.title} (${video.time})`,
                     documentId
                 }
             });
             console.log(`      🎥 Added video link: ${video.title}`);
+        }
+    }
+}
+async function handleExtraCommitteeData(documentId: number, processNumber: string) {
+    const meetings = await fetchExtraCommitteeData(processNumber);
+
+    for (const meeting of meetings) {
+        // Create or find a timeline event for this committee meeting
+        const eventTitle = `Committee Meeting (Extra)`;
+        const dateObj = new Date(meeting.date);
+
+        // Find existing event
+        let event = await prisma.timelineEvent.findFirst({
+            where: {
+                documentId,
+                date: dateObj,
+                title: eventTitle
+            }
+        });
+
+        // Create if not exists
+        if (!event) {
+            event = await prisma.timelineEvent.create({
+                data: {
+                    documentId,
+                    date: dateObj,
+                    title: eventTitle,
+                    status: TimelineStatus.SEJM,
+                    description: "Committee meeting materials"
+                }
+            });
+            console.log(`      📅 Added timeline event for committee meeting on ${meeting.date}`);
+        }
+
+        // Process links as attachments
+        for (const link of meeting.links) {
+            let targetUrl = link.url;
+            let type = 'html';
+            let title = link.title || 'Document';
+
+            // Special handling for video transmissions
+            if (link.url.includes('transmisja.xsp') && link.url.includes('documentId=')) {
+                const match = link.url.match(/documentId=([a-zA-Z0-9]+)/);
+                if (match && match[1]) {
+                    targetUrl = `https://www.sejm.gov.pl/Sejm10.nsf/VideoFrame.xsp/${match[1]}`;
+                    type = 'video-iframe';
+                    title = 'Video Transmission';
+                }
+            } else {
+                const lowerUrl = link.url.toLowerCase();
+                if (lowerUrl.endsWith('.pdf')) type = 'pdf';
+                else if (lowerUrl.endsWith('.doc') || lowerUrl.endsWith('.docx')) type = 'doc';
+            }
+
+            const existingAttachment = await prisma.attachment.findFirst({
+                where: {
+                    timelineEventId: event.id,
+                    url: targetUrl
+                }
+            });
+
+            if (!existingAttachment) {
+                await prisma.attachment.create({
+                    data: {
+                        name: title,
+                        title: title,
+                        url: targetUrl,
+                        type: type,
+                        timelineEventId: event.id
+                    }
+                });
+                console.log(`      📎 Added attachment: ${title} (${type})`);
+            }
         }
     }
 }
@@ -442,8 +606,6 @@ async function handleCommitteeStages(documentId: number, process: SejmProcess) {
 
     for (const stage of process.stages) {
         if (stage.committee && stage.date) {
-            const codes = stage.committee.split(' '); // Może być kilka komisji? Przyjmijmy że space separated lub sprawdzamy
-            // API często zwraca jeden kod np. "ASW". Ale czasem "ASW, USE".
             const codeList = stage.committee.replace(',', '').split(' ').filter(c => c.length > 0);
 
             for (const code of codeList) {
@@ -452,24 +614,32 @@ async function handleCommitteeStages(documentId: number, process: SejmProcess) {
                     committeeActivities.add(key);
                     console.log(`      🔎 Checking committee ${code} on ${stage.date}...`);
 
-                    // 1. Stenogram / Posiedzenie
+                    // 1. Transcript / Sitting
                     const sitting = await fetchCommitteeSitting(process.term, code, stage.date!);
                     if (sitting) {
                         const webUrl = `https://www.sejm.gov.pl/Sejm10.nsf/biuletyn.xsp?skrnr=${code}-${sitting.num}`;
-                        const existingLink = await prisma.link.findFirst({ where: { documentId, url: webUrl } });
-                        if (!existingLink) {
-                            await prisma.link.create({
+                        const title = `Committee Meeting ${code}`;
+                        const description = `[Bulletin no. ${sitting.num}](${webUrl})`;
+
+                        const existingEvent = await prisma.timelineEvent.findFirst({
+                            where: { documentId, date: new Date(stage.date!), title }
+                        });
+
+                        if (!existingEvent) {
+                            await prisma.timelineEvent.create({
                                 data: {
-                                    url: webUrl,
-                                    description: `Biuletyn z posiedzenia Komisji ${code} nr ${sitting.num}`,
-                                    documentId
+                                    documentId,
+                                    date: new Date(stage.date!),
+                                    title,
+                                    status: TimelineStatus.SEJM,
+                                    description
                                 }
                             });
-                            console.log(`      📄 Added committee transcript: ${code} nr ${sitting.num}`);
+                            console.log(`      📅 Added timeline event: ${title}`);
                         }
                     }
 
-                    // 2. Wideo
+                    // 2. Video
                     const videos = await fetchCommitteeVideos(process.term, code, stage.date!);
                     for (const video of videos) {
                         const videoUrl = `https://www.sejm.gov.pl/Sejm10.nsf/transmisje_arch.xsp?unid=${video.unid}`;
@@ -478,7 +648,7 @@ async function handleCommitteeStages(documentId: number, process: SejmProcess) {
                             await prisma.link.create({
                                 data: {
                                     url: videoUrl,
-                                    description: `Transmisja komisji: ${video.title}`,
+                                    description: `Committee transmission: ${video.title}`,
                                     documentId
                                 }
                             });
@@ -545,14 +715,46 @@ export async function syncFromSejm(options: {
     startId?: number;
     endId?: number;
     term?: number;
+    printId?: string; // Single print support
 } = {}): Promise<{ created: number; updated: number; linked: number; notFound: number; errors: number }> {
-    const { startId = 1, endId = 2000, term = 10 } = options;
+    const { startId = 1, endId = 2000, term = 10, printId } = options;
+
+    const stats = { created: 0, updated: 0, linked: 0, notFound: 0, errors: 0 };
+
+    // Single print mode (printId in Sejm API is process ID)
+    if (printId) {
+        console.log(`\n🏛️ Starting Sejm synchronization for specific Process/Print ID: ${printId}...`);
+        try {
+            const id = parseInt(printId);
+            if (isNaN(id)) {
+                console.error(`❌ Invalid Process ID: ${printId}`);
+                return stats;
+            }
+
+            const process = await fetchSejmProcess(id);
+            if (!process) {
+                console.error(`❌ Process ${id} not found in Sejm API.`);
+                stats.notFound++;
+                return stats;
+            }
+
+            console.log(`   🔎 Found process: ${process.title.substring(0, 50)}...`);
+            const result = await syncSejmProcess(process);
+
+            if (result.isNew) stats.created++;
+            else if (result.updated) stats.updated++;
+            if (result.linked) stats.linked++;
+
+        } catch (err) {
+            console.error(`   ❌ Error syncing process ${printId}:`, err);
+            stats.errors++;
+        }
+        return stats;
+    }
 
     console.log('\n🏛️ Starting synchronization with Sejm API...');
     console.log('━'.repeat(60));
     console.log(`📍 Term: ${term}, Process IDs: ${startId} - ${endId}`);
-
-    const stats = { created: 0, updated: 0, linked: 0, notFound: 0, errors: 0 };
 
     for (let id = startId; id <= endId; id++) {
         try {
@@ -598,18 +800,4 @@ export async function syncFromSejm(options: {
     console.log('   Errors: ' + stats.errors);
 
     return stats;
-}
-
-if (require.main === module) {
-    const args = process.argv.slice(2);
-    const startId = parseInt(args[0]) || 1;
-    const endId = parseInt(args[1]) || 2000;
-
-    syncFromSejm({ startId, endId })
-        .then(() => process.exit(0))
-        .catch(err => {
-            console.error('Fatal error:', err);
-            process.exit(1);
-        })
-        .finally(() => prisma.$disconnect());
 }

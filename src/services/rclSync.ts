@@ -1,3 +1,4 @@
+
 import * as cheerio from 'cheerio';
 import { prisma } from '../lib/prisma';
 import { areTitlesSimilar, levenshteinDistance } from '../utils/stringComparison';
@@ -6,15 +7,15 @@ import { DocumentType, DocumentLevel, DocumentStatus, TimelineStatus } from '@pr
 const BASE_URL = 'https://legislacja.rcl.gov.pl';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-// Rate limiting - opóźnienie między requestami (ms)
+// Rate limiting - request delay (ms)
 const REQUEST_DELAY = 500;
 
-// Interfejsy
+// Interfaces
 interface RclProject {
     rclId: string;
     title: string;
     applicant: string;
-    registryNumber: string; // Numer z wykazu
+    registryNumber: string; // Registry number
     createdDate: string;
     modifiedDate: string;
 }
@@ -31,9 +32,9 @@ interface RclProjectDetails {
     euRegulation?: string;
     legalBasis?: string;
     stages: RclStage[];
-    isPublished: boolean; // Czy dokument został opublikowany (zakończył obieg)
-    dziennikUstawLink?: string; // Link do Dziennika Ustaw jeśli opublikowany
-    sejmRplId?: string; // Id z linku Sejmu RPL (np. RM-0610-167-25)
+    isPublished: boolean; // Is document published (finished timeline)
+    dziennikUstawLink?: string; // Link to "Dziennik Ustaw" if published
+    sejmRplId?: string; // ID from Sejm RPL link (e.g., RM-0610-167-25)
 }
 
 interface RclStage {
@@ -51,12 +52,12 @@ interface RclAttachment {
     createdDate?: string;
 }
 
-// Funkcja pomocnicza do opóźnienia
+// Helper function for delay
 function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Funkcja do pobierania HTML
+// Function to fetch HTML
 async function fetchHtml(url: string): Promise<string> {
     const response = await fetch(url, {
         headers: {
@@ -73,7 +74,7 @@ async function fetchHtml(url: string): Promise<string> {
     return response.text();
 }
 
-// Parsowanie typu dokumentu
+// Parse document type
 function parseDocumentType(title: string): DocumentType {
     const lower = title.toLowerCase();
     if (lower.includes('projekt ustaw') || lower.includes('ustawa')) return DocumentType.USTAWA;
@@ -84,7 +85,7 @@ function parseDocumentType(title: string): DocumentType {
     return DocumentType.INNE;
 }
 
-// Parsowanie statusu
+// Parse status
 function parseStatus(status: string): DocumentStatus {
     const lower = status.toLowerCase();
     if (lower.includes('przyjęt') || lower.includes('przyjęty') || lower.includes('zamknięt')) return DocumentStatus.ACCEPTED;
@@ -93,7 +94,7 @@ function parseStatus(status: string): DocumentStatus {
     return DocumentStatus.DRAFT;
 }
 
-// Parsowanie statusu etapu
+// Parse timeline status
 function parseTimelineStatus(stageName: string): TimelineStatus {
     const lower = stageName.toLowerCase();
     if (lower.includes('sejm')) return TimelineStatus.SEJM;
@@ -104,22 +105,22 @@ function parseTimelineStatus(stageName: string): TimelineStatus {
     return TimelineStatus.DRAFT;
 }
 
-// KROK 1: Pobierz listę projektów z danej strony (paginacja przez pNumber)
+// Step 1: Fetch project list (pagination via pNumber)
 export async function fetchProjectList(pageNum: number = 1, limit: number = 50): Promise<RclProject[]> {
-    // RCL używa parametru pNumber do paginacji (zaczyna od 1)
-    const url = `${BASE_URL}/lista?pNumber=${pageNum}`;
+    // RCL uses pNumber parameter for pagination (starts from 1)
+    const url = `${BASE_URL}/lista?pNumber=${pageNum}&isNumerSejm=true&_isNumerSejm=on`;
     console.log(`📜 Fetching project list from: ${url}`);
 
     const html = await fetchHtml(url);
     const $ = cheerio.load(html);
     const projects: RclProject[] = [];
 
-    // Tabela z projektami - szukamy wierszy w tabeli
+    // Projects table - looking for rows
     $('table tbody tr, table tr').slice(0, limit).each((_, row) => {
         const $row = $(row);
         const cells = $row.find('td');
 
-        if (cells.length < 5) return; // Pomijamy nagłówki
+        if (cells.length < 5) return; // Skip headers
 
         const titleCell = cells.eq(0);
         const link = titleCell.find('a[href*="/projekt/"]');
@@ -150,7 +151,7 @@ export async function fetchProjectList(pageNum: number = 1, limit: number = 50):
     return projects;
 }
 
-// KROK 2: Pobierz szczegóły projektu
+// Step 2: Fetch project details
 export async function fetchProjectDetails(rclId: string): Promise<RclProjectDetails | null> {
     const url = `${BASE_URL}/projekt/${rclId}`;
     console.log(`   🔍 Fetching details for project ${rclId}`);
@@ -160,19 +161,23 @@ export async function fetchProjectDetails(rclId: string): Promise<RclProjectDeta
         const $ = cheerio.load(html);
 
         const title = $('.rcl-title').first().text().trim();
+        if (!title) {
+            console.warn(`   ⚠️ No title found for project ${rclId}. The ID might be invalid or a catalog ID.`);
+            return null;
+        }
         const applicant = extractFieldValue($, 'Wnioskodawca:');
         const registryNumber = extractFieldValue($, 'Numer z wykazu:');
         const createdDate = extractFieldValue($, 'Data utworzenia:');
         const status = extractFieldValue($, 'Status projektu:');
 
-        // Działy (departamenty)
+        // Departments
         const departments: string[] = [];
         const deptRow = $('div.row:contains("Działy:")');
         deptRow.find('a').each((_, el) => {
             departments.push($(el).text().trim());
         });
 
-        // Hasła (słowa kluczowe)
+        // Keywords
         const keywords: string[] = [];
         const keywordRow = $('div.row:contains("Hasła:")');
         keywordRow.find('a').each((_, el) => {
@@ -182,50 +187,62 @@ export async function fetchProjectDetails(rclId: string): Promise<RclProjectDeta
         // EU Regulation
         const euRegulation = extractFieldValue($, 'Projekt realizuje przepisy prawa Unii Europejskiej:');
 
-        // Podstawa prawna
+        // Legal basis
         const legalBasis = $('.clearbox-grey').text().trim();
 
-        // Szukaj linku do Dziennika Ustaw (format: Dz.U. 2025r. poz. 1630)
-        // UWAGA: Każda strona RCL ma niepełny link www.dziennikustaw.gov.pl/DU w nagłówku
-        // Musimy szukać PEŁNYCH linków z numerem: /DU/YYYY/NNNN
+        // Search for Dziennik Ustaw link (format: Dz.U. 2025r. poz. 1630)
+        // FIX: Ignore links in "Legal basis" section (.clearbox-grey) which refer to old laws
         let dziennikUstawLink: string | undefined;
-        const pageText = $('body').text();
 
-        // Metoda 1: Szukaj PEŁNEGO linku do dziennikustaw.gov.pl (z rokiem i numerem)
+        // Method 1: Search for FULL link to dziennikustaw.gov.pl in content, skipping legal basis header
         $('a[href*="dziennikustaw.gov.pl"]').each((_, el) => {
-            const href = $(el).attr('href') || '';
-            // Sprawdź czy link zawiera pełną ścieżkę /DU/YYYY/NNNN
+            const $el = $(el);
+            // Ignore links in legal basis section
+            if ($el.closest('.clearbox-grey').length > 0) return;
+
+            const href = $el.attr('href') || '';
+            // Check if link contains full path /DU/YYYY/NNNN
             if (/\/DU\/\d{4}\/\d+/.test(href)) {
                 dziennikUstawLink = href;
-                console.log(`   📜 Found Dz.U. link: ${href}`);
+                console.log(`   📜 Found Dz.U. link (publication): ${href}`);
                 return false; // break
             }
         });
 
-        // Metoda 2: Jeśli nie znaleziono linku, wyekstrahuj z tekstu "Dz.U. 2025r. poz. 1630"
-        if (!dziennikUstawLink) {
-            const dzuMatch = pageText.match(/Dz\.?U\.?\s*(\d{4})\s*r?\.?\s*poz\.?\s*(\d+)/i);
+        // Method 2: If no link found, search in text, but ONLY if there is publication info
+        // Clone body and remove legal basis section to avoid parsing its content
+        const $bodyClone = $('body').clone();
+        $bodyClone.find('.clearbox-grey').remove();
+        $bodyClone.find('script, style, head').remove();
+        const cleanPageText = $bodyClone.text();
+        const cleanPageTextLower = cleanPageText.toLowerCase();
+
+        const hasPublicationText = cleanPageTextLower.includes('projekt został opublikowany') ||
+            cleanPageTextLower.includes('zakończenie prac') ||
+            status.toLowerCase().includes('zakończone');
+
+        if (!dziennikUstawLink && hasPublicationText) {
+            // Search for Dz.U. pattern in cleaned text
+            const dzuMatch = cleanPageText.match(/Dz\.?U\.?\s*(\d{4})\s*r?\.?\s*poz\.?\s*(\d+)/i);
             if (dzuMatch) {
                 const year = dzuMatch[1];
                 const pos = dzuMatch[2];
                 dziennikUstawLink = `https://dziennikustaw.gov.pl/DU/${year}/${pos}`;
-                console.log(`   📜 Built Dz.U. link from text: ${year} poz. ${pos}`);
+                console.log(`   📜 Built Dz.U. link from text (published project): ${year} poz. ${pos}`);
             }
         }
 
-        // Sprawdź czy dokument został FAKTYCZNIE opublikowany:
-        // - Musi mieć link do Dz.U. z numerem LUB
-        // - Tekst "projekt został opublikowany"
-        const pageTextLower = pageText.toLowerCase();
-        const hasPublicationText = pageTextLower.includes('projekt został opublikowany');
-        const isPublished = !!dziennikUstawLink || hasPublicationText;
+        // isPublished is true ONLY if we found a concrete link (direct or built)
+        // And we have confirmation in text or status that it is finished.
+        // "Project was published" text without link might be enough for flag, but link is key.
+        const isPublished = !!dziennikUstawLink || (hasPublicationText && cleanPageTextLower.includes('dz.u.'));
 
-        // Szukaj linku do Sejmu RPL (np. http://www.sejm.gov.pl/Sejm7.nsf/agent.xsp?symbol=RPL&Id=RM-0610-167-25)
-        // Wyciągnij Id dla ustaw przekazanych do Sejmu
+        // Search for Sejm RPL link (e.g. http://www.sejm.gov.pl/Sejm7.nsf/agent.xsp?symbol=RPL&Id=RM-0610-167-25)
+        // Extract Id for laws passed to Sejm
         let sejmRplId: string | undefined;
         $('a[href*="sejm.gov.pl"]').each((_, el) => {
             const href = $(el).attr('href') || '';
-            // Szukaj parametru Id w URL
+            // Search for Id parameter in URL
             const idMatch = href.match(/[?&]Id=([A-Za-z0-9-]+)/i);
             if (idMatch) {
                 sejmRplId = idMatch[1];
@@ -234,7 +251,7 @@ export async function fetchProjectDetails(rclId: string): Promise<RclProjectDeta
             }
         });
 
-        // Etapy procesu legislacyjnego
+        // Legislative process stages
         const stages: RclStage[] = [];
         $('ul.cbp_tmtimeline li').each((_, li) => {
             const $li = $(li);
@@ -282,13 +299,13 @@ export async function fetchProjectDetails(rclId: string): Promise<RclProjectDeta
     }
 }
 
-// Pomocnik do ekstrakcji wartości pól
+// Helper to extract field values
 function extractFieldValue($: cheerio.CheerioAPI, label: string): string {
     const row = $(`div.row:contains("${label}")`);
     return row.find('.col-xs-6').text().trim();
 }
 
-// KROK 3: Pobierz załączniki z etapu
+// Step 3: Fetch stage attachments
 export async function fetchStageAttachments(stageUrl: string): Promise<RclAttachment[]> {
     console.log(`   📎 Fetching attachments from: ${stageUrl}`);
 
@@ -302,7 +319,7 @@ export async function fetchStageAttachments(stageUrl: string): Promise<RclAttach
             const href = $el.attr('href') || '';
             const name = $el.text().trim();
 
-            // Typ pliku
+            // File type
             const ext = href.split('.').pop()?.toLowerCase() || 'unknown';
 
             if (!['pdf', 'docx', 'doc'].includes(ext)) return;
@@ -322,9 +339,9 @@ export async function fetchStageAttachments(stageUrl: string): Promise<RclAttach
     }
 }
 
-// Funkcja do wyszukiwania dokumentu w bazie - ulepszone szukanie
+// Function to find document in DB - improved search
 async function findExistingDocument(registryNumber: string, title: string, applicant: string): Promise<{ id: number; title: string } | null> {
-    // 1. Szukaj po numerze z wykazu (registryNumber)
+    // 1. Search by registry number
     if (registryNumber) {
         const byNumber = await prisma.legalDocument.findFirst({
             where: { registryNumber },
@@ -333,12 +350,12 @@ async function findExistingDocument(registryNumber: string, title: string, appli
         if (byNumber) return byNumber;
     }
 
-    // 2. Pobierz kandydatów z bazy przez częściowe dopasowanie
+    // 2. Fetch candidates from DB via partial match
     const titleParts = [];
     if (title.length > 15) {
-        titleParts.push(title.substring(0, 15)); // Początek
-        titleParts.push(title.substring(Math.max(0, title.length - 15))); // Koniec
-        // Środek dla unikalności
+        titleParts.push(title.substring(0, 15)); // Start
+        titleParts.push(title.substring(Math.max(0, title.length - 15))); // End
+        // Middle for uniqueness
         if (title.length > 40) {
             const mid = Math.floor(title.length / 2);
             titleParts.push(title.substring(mid - 10, mid + 10));
@@ -356,16 +373,16 @@ async function findExistingDocument(registryNumber: string, title: string, appli
         select: { id: true, title: true }
     });
 
-    // 3. Filtruj i rankuj kandydatów
+    // 3. Filter and rank candidates
     let bestMatch: { id: number; title: string } | null = null;
     let minDistance = Infinity;
 
     for (const candidate of candidates) {
-        // Sprawdź czy są podobne wg naszych kryteriów
+        // Check if similar according to our criteria
         if (areTitlesSimilar(title, candidate.title)) {
             const dist = levenshteinDistance(title.toLowerCase(), candidate.title.toLowerCase());
 
-            // Preferuj mniejszy dystans
+            // Prefer lower distance
             if (dist < minDistance) {
                 minDistance = dist;
                 bestMatch = candidate;
@@ -376,7 +393,7 @@ async function findExistingDocument(registryNumber: string, title: string, appli
     return bestMatch;
 }
 
-// Funkcja pomocnicza do upsert taga
+// Helper to upsert tag
 async function getOrCreateTag(name: string) {
     return prisma.tag.upsert({
         where: { name },
@@ -385,7 +402,7 @@ async function getOrCreateTag(name: string) {
     });
 }
 
-// Główna funkcja synchronizacji jednego projektu
+// Main function to sync one project
 async function syncProject(project: RclProject): Promise<{ isNew: boolean; updated: boolean }> {
     const details = await fetchProjectDetails(project.rclId);
     if (!details) {
@@ -394,18 +411,18 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
 
     await delay(REQUEST_DELAY);
 
-    // Znajdź istniejący dokument
+    // Find existing document
     const existing = await findExistingDocument(
         details.registryNumber,
         details.title,
         details.applicant
     );
 
-    // Przygotuj tagi z haseł i działów (limit 10)
+    // Prepare tags from keywords and departments (limit 10)
     const tagNames = [...details.keywords, ...details.departments].filter(Boolean).slice(0, 10);
     const tags = await Promise.all(tagNames.map(t => getOrCreateTag(t)));
 
-    // Parsuj datę - używamy daty z listy projektów (format DD-MM-YYYY)
+    // Parse date - use date from project list (DD-MM-YYYY)
     let createdAt: Date = new Date();
     const dateStr = project.createdDate;
     if (dateStr) {
@@ -419,14 +436,14 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
     }
 
     if (existing) {
-        // Określ status - jeśli zrealizowany (ogłoszony) to ACCEPTED
+        // Determine status - i Published (announced) then ACCEPTED
         const finalStatus = details.isPublished ? DocumentStatus.ACCEPTED : parseStatus(details.status);
 
-        // Aktualizuj istniejący dokument z RCL
+        // Update existing document from RCL
         await prisma.legalDocument.update({
             where: { id: existing.id },
             data: {
-                title: project.title, // Pełny tytuł z listy
+                title: project.title, // Full title from list
                 type: parseDocumentType(project.title),
                 status: finalStatus,
                 summary: details.legalBasis || null,
@@ -436,7 +453,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
             }
         });
 
-        // Dodaj link do RCL jeśli nie istnieje
+        // Add RCL link if not exists
         const rclLink = `${BASE_URL}/projekt/${project.rclId}`;
         const existingRclLink = await prisma.link.findFirst({
             where: { documentId: existing.id, url: rclLink }
@@ -445,13 +462,13 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
             await prisma.link.create({
                 data: {
                     url: rclLink,
-                    description: 'Strona projektu w RCL',
+                    description: 'Project page in RCL',
                     documentId: existing.id
                 }
             });
         }
 
-        // Dodaj link do Dziennika Ustaw jeśli opublikowany
+        // Add Dziennik Ustaw link if published
         if (details.dziennikUstawLink) {
             const existingDzuLink = await prisma.link.findFirst({
                 where: { documentId: existing.id, url: details.dziennikUstawLink }
@@ -460,7 +477,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
                 await prisma.link.create({
                     data: {
                         url: details.dziennikUstawLink,
-                        description: 'Publikacja w Dzienniku Ustaw',
+                        description: 'Publication in Dziennik Ustaw',
                         documentId: existing.id
                     }
                 });
@@ -468,13 +485,13 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
             }
         }
 
-        // Synchronizuj etapy jako timeline
+        // Sync stages as timeline
         for (const stage of details.stages) {
             if (stage.url) {
                 await delay(REQUEST_DELAY);
                 const attachments = await fetchStageAttachments(stage.url);
 
-                // Parsuj datę etapu
+                // Parse stage date
                 let stageDate = new Date();
                 if (stage.modifiedDate) {
                     const [day, month, year] = stage.modifiedDate.split('-');
@@ -483,7 +500,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
                     }
                 }
 
-                // Sprawdź czy etap już istnieje
+                // Check if stage already exists
                 const existingStage = await prisma.timelineEvent.findFirst({
                     where: {
                         documentId: existing.id,
@@ -497,13 +514,13 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
                             date: stageDate,
                             status: parseTimelineStatus(stage.name),
                             title: stage.name,
-                            description: `Etap procesu legislacyjnego: ${stage.name}`,
+                            description: `Legislative process stage: ${stage.name}`,
                             documentId: existing.id
                         }
                     });
 
-                    // Dodaj załączniki
-                    for (const attachment of attachments.slice(0, 20)) { // Limit 20 załączników
+                    // Add attachments
+                    for (const attachment of attachments.slice(0, 20)) { // Limit 20 attachments
                         await prisma.attachment.create({
                             data: {
                                 name: attachment.name.substring(0, 255),
@@ -520,27 +537,27 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
         console.log(`   📝 Updated: ${project.title.substring(0, 50)}...`);
         return { isNew: false, updated: true };
     } else {
-        // Określ status - jeśli zrealizowany (ogłoszony) to ACCEPTED
+        // Determine status
         const finalStatus = details.isPublished ? DocumentStatus.ACCEPTED : parseStatus(details.status);
 
-        // Utwórz nowy dokument - używamy danych z listy projektów (są czystsze)
+        // Create new document - use data from project list (cleaner)
         const document = await prisma.legalDocument.create({
             data: {
                 registryNumber: project.registryNumber || `RCL-${project.rclId}`,
-                title: project.title, // Pełny tytuł z listy
+                title: project.title, // Full title from list
                 type: parseDocumentType(project.title),
                 level: DocumentLevel.KRAJOWY,
                 location: 'Polska',
                 status: finalStatus,
                 summary: details.legalBasis || null,
-                submittingEntity: project.applicant, // Wnioskodawca z listy
+                submittingEntity: project.applicant, // Applicant from list
                 sejmRplId: details.sejmRplId || undefined,
                 tags: { connect: tags.map(t => ({ id: t.id })) },
                 createdAt
             }
         });
 
-        // Dodaj osobę odpowiedzialną
+        // Add responsible person
         if (project.applicant) {
             await prisma.responsiblePerson.create({
                 data: {
@@ -550,28 +567,28 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
             });
         }
 
-        // Dodaj link do RCL
+        // Add RCL link
         await prisma.link.create({
             data: {
                 url: `${BASE_URL}/projekt/${project.rclId}`,
-                description: 'Strona projektu w RCL',
+                description: 'Project page in RCL',
                 documentId: document.id
             }
         });
 
-        // Dodaj link do Dziennika Ustaw jeśli opublikowany
+        // Add Dziennik Ustaw link if published
         if (details.dziennikUstawLink) {
             await prisma.link.create({
                 data: {
                     url: details.dziennikUstawLink,
-                    description: 'Publikacja w Dzienniku Ustaw',
+                    description: 'Publication in Dziennik Ustaw',
                     documentId: document.id
                 }
             });
             console.log(`   📜 Added Dz.U. link: ${details.dziennikUstawLink}`);
         }
 
-        // Inicjalizuj głosy
+        // Initialize votes
         await prisma.votes.create({
             data: {
                 up: 0,
@@ -580,7 +597,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
             }
         });
 
-        // Dodaj analizę AI
+        // Add AI analysis
         await prisma.aiAnalysis.create({
             data: {
                 sentiment: 0,
@@ -588,7 +605,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
             }
         });
 
-        // Synchronizuj etapy
+        // Sync stages
         for (const stage of details.stages) {
             if (stage.url) {
                 await delay(REQUEST_DELAY);
@@ -607,7 +624,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
                         date: stageDate,
                         status: parseTimelineStatus(stage.name),
                         title: stage.name,
-                        description: `Etap procesu legislacyjnego: ${stage.name}`,
+                        description: `Legislative process stage: ${stage.name}`,
                         documentId: document.id
                     }
                 });
@@ -630,21 +647,56 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
     }
 }
 
-// Główna funkcja synchronizacji
+// Main sync function
 export async function syncFromRcl(options: {
     startPage?: number;
     pages?: number;
-    projectsPerPage?: number
+    projectsPerPage?: number;
+    projectId?: string;
 } = {}): Promise<{ created: number; updated: number; errors: number }> {
-    const { startPage = 1, pages = 5, projectsPerPage = 50 } = options;
+    const { startPage = 1, pages = 5, projectsPerPage = 50, projectId } = options;
+
+    const stats = { created: 0, updated: 0, errors: 0 };
+
+    // Single project mode
+    if (projectId) {
+        console.log(`\n🔄 Starting partial synchronization for RCL Project ID: ${projectId}...`);
+        try {
+            const details = await fetchProjectDetails(projectId);
+            if (!details) {
+                console.error(`❌ Project ${projectId} details not found.`);
+                return stats;
+            }
+
+            // Mock project object from details (because syncProject requires RclProject)
+            const project: RclProject = {
+                rclId: details.rclId,
+                title: details.title,
+                applicant: details.applicant,
+                registryNumber: details.registryNumber,
+                createdDate: details.createdDate,
+                modifiedDate: '' // Irrelevant for single sync
+            };
+
+            const result = await syncProject(project);
+
+            if (result.isNew) {
+                stats.created++;
+            } else if (result.updated) {
+                stats.updated++;
+            }
+        } catch (err) {
+            console.error(`   ❌ Error syncing project ${projectId}:`, err);
+            stats.errors++;
+        }
+        return stats;
+    }
 
     console.log('\n🔄 Starting synchronization with RCL (legislacja.rcl.gov.pl)...');
     console.log('━'.repeat(60));
     console.log(`📍 Start page: ${startPage}, Pages to sync: ${pages}, Projects per page: ${projectsPerPage}`);
 
-    const stats = { created: 0, updated: 0, errors: 0 };
-
-    // Paginacja RCL zaczyna się od 1
+    // RCL pagination starts from 1
     for (let pageNum = startPage; pageNum < startPage + pages; pageNum++) {
         try {
             console.log(`\n📄 Page ${pageNum}...`);
@@ -657,7 +709,7 @@ export async function syncFromRcl(options: {
 
             for (const project of projects) {
                 try {
-                    // Filtruj tylko projekty od 2023 roku
+                    // Filter only projects from 2023+ (or 2025 as in original code)
                     const yearMatch = project.createdDate.match(/(\d{4})/);
                     if (yearMatch) {
                         const year = parseInt(yearMatch[1]);
@@ -697,15 +749,47 @@ export async function syncFromRcl(options: {
     return stats;
 }
 
-// Uruchom synchronizację jeśli wywołano bezpośrednio
-// Użycie: npm run sync:rcl -- [startPage] [pages] [projectsPerPage]
+// Run sync if called directly
+// Usage: npm run sync:rcl -- [startPage] [pages] [projectsPerPage]
 if (require.main === module) {
     const args = process.argv.slice(2);
-    const startPage = parseInt(args[0]) || 1;
-    const pages = parseInt(args[1]) || 5;
-    const projectsPerPage = parseInt(args[2]) || 50;
 
-    syncFromRcl({ startPage, pages, projectsPerPage })
+    let projectId: string | undefined;
+    let startPage = 1;
+    let pages = 5;
+    let projectsPerPage = 50;
+
+    // 1. Check for --id flag
+    const idIndex = args.indexOf('--id');
+    if (idIndex !== -1 && args[idIndex + 1]) {
+        projectId = args[idIndex + 1];
+    }
+    // 2. Check if first argument is ID or URL
+    else if (args.length > 0) {
+        const arg0 = args[0];
+        // Regex for URL
+        const urlMatch = arg0.match(/\/projekt\/(\d+)/);
+
+        if (urlMatch) {
+            projectId = urlMatch[1];
+        } else {
+            // Heuristic: Large numbers are Project IDs, small are page numbers
+            const num = parseInt(arg0);
+            if (!isNaN(num) && num > 100000) {
+                projectId = arg0;
+            } else {
+                startPage = num || 1;
+                pages = parseInt(args[1]) || 5;
+                projectsPerPage = parseInt(args[2]) || 50;
+            }
+        }
+    }
+
+    const options = projectId
+        ? { projectId }
+        : { startPage, pages, projectsPerPage };
+
+    syncFromRcl(options)
         .then(() => process.exit(0))
         .catch(err => {
             console.error('Fatal error:', err);
@@ -713,4 +797,3 @@ if (require.main === module) {
         })
         .finally(() => prisma.$disconnect());
 }
-
