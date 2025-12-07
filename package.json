@@ -28,9 +28,12 @@
     "author": "",
     "license": "MIT",
     "dependencies": {
+        "@ai-sdk/google": "^2.0.44",
+        "@google/generative-ai": "^0.24.1",
         "@prisma/client": "^5.22.0",
         "@supabase/supabase-js": "^2.46.0",
         "@types/pdf-parse": "^1.1.5",
+        "ai": "^5.0.108",
         "cheerio": "^1.1.2",
         "cors": "^2.8.5",
         "dotenv": "^17.2.3",
@@ -39,7 +42,7 @@
         "node-cron": "^4.2.1",
         "openai": "^6.10.0",
         "pdf-parse": "^2.4.5",
-        "zod": "^3.23.8"
+        "zod": "^3.25.76"
     },
     "devDependencies": {
         "@types/cors": "^2.8.17",

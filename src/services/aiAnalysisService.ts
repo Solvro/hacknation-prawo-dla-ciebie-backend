@@ -1,9 +1,9 @@
 
 import 'dotenv/config';
 import OpenAI from 'openai';
-const pdf = require('pdf-parse');
+import { PDFParse } from 'pdf-parse';
 const mammoth = require("mammoth");
-
+import { GoogleGenerativeAI } from "@google/generative-ai";
 async function extractTextFromDocx(url: string): Promise<string> {
     try {
         const response = await fetch(url);
@@ -45,14 +45,18 @@ interface AiAnalysisResult {
 }
 
 async function extractTextFromPdf(url: string): Promise<string> {
+    let parser;
     try {
-        const response = await fetch(url);
-        const buffer = await response.arrayBuffer();
-        const data = await pdf(Buffer.from(buffer));
-        return data.text;
+        parser = new PDFParse({ url });
+        const result = await parser.getText();
+        return result.text;
     } catch (error) {
         console.error(`Error extracting text from PDF ${url}:`, error);
         return "";
+    } finally {
+        if (parser) {
+            await parser.destroy();
+        }
     }
 }
 
@@ -103,7 +107,9 @@ async function analyzeDocument(documentId: number) {
             content: true,
             // Pobieramy istniejące dane, aby dać AI kontekst lub je nadpisać
             tags: true,
-            sectors: true
+            sectors: true,
+            links: true,
+            responsiblePerson: true
         }
     });
 
@@ -115,9 +121,30 @@ async function analyzeDocument(documentId: number) {
     let fullText = `Tytuł: ${document.title}\n`;
     if (document.summary) fullText += `Obecne streszczenie: ${document.summary}\n`;
 
+    // Dane o osobie odpowiedzialnej
+    if (document.responsiblePerson) {
+        fullText += `Osoba odpowiedzialna: ${document.responsiblePerson.name} (${document.responsiblePerson.role || 'Brak roli'}, ${document.responsiblePerson.email || 'Brak email'})\n`;
+    }
+
+    // Linki
+    if (document.links && document.links.length > 0) {
+        fullText += "Linki:\n";
+        document.links.forEach(l => fullText += `- ${l.url} (${l.description || ''})\n`);
+    }
+
+    // Timeline - kontekst historyczny
+    if (document.timeline && document.timeline.length > 0) {
+        fullText += "\n--- PRZEBIEG PROCESU LEGISLACYJNEGO (Timeline) ---\n";
+        // Sortowanie od najstarszych do najnowszych dla kontekstu
+        const chronology = [...document.timeline].sort((a, b) => a.date.getTime() - b.date.getTime());
+        chronology.forEach(event => {
+            fullText += `${event.date.toISOString().split('T')[0]} - ${event.status}: ${event.title}\n`;
+        });
+    }
+
     // Treść z sekcji (jeśli są)
     if (document.content && document.content.length > 0) {
-        fullText += "\n--- TREŚĆ DOKUMENTU ---\n";
+        fullText += "\n--- TREŚĆ DOKUMENTU (Z BAZY) ---\n";
         document.content.sort((a, b) => a.order - b.order).forEach(section => {
             fullText += `${section.label}: ${section.text}\n`;
         });
@@ -198,14 +225,10 @@ async function analyzeDocument(documentId: number) {
 
     fullText += attachmentText;
 
-    // Ograniczenie całości tekstu (zabezpieczenie dla modelu)
-    if (fullText.length > 100000) {
-        console.log('   ⚠️ Text too long, truncating...');
-        fullText = fullText.substring(0, 100000);
-    }
+    console.log(`   🧠 Preparing AI request. Text length: ${fullText.length} chars`);
 
-    // 3. Wyślij do OpenAI
-    console.log('   🧠 Sending request to OpenAI...');
+    let analysis: AiAnalysisResult = {} as AiAnalysisResult;
+    const OPENAI_CHAR_LIMIT = 60000; // Bezpieczny limit dla szybkiego/tańszego OpenAI (choć 4o ma większy kontekst)
 
     const systemPrompt = `
 Jesteś zaawansowanym asystentem prawnym AI. Twoim zadaniem jest dogłębna analiza polskiego dokumentu legislacyjnego (projektu ustawy, rozporządzenia itp.).
@@ -221,29 +244,86 @@ Pamiętaj:
 - "main_bill_file_name": Wskaż nazwę pliku z listy załączników, który zawiera najnowszy główny tekst procedowanej ustawy/projektu (pomiń uzasadnienia, opinie, OSR, jeśli dostępny jest tekst właściwy). Jeśli nie ma ewidentnego tekstu ustawy, zwróć null.
     `;
 
-    const completion = await openai.chat.completions.create({
-        model: "gpt-4o",
-        response_format: { type: "json_object" },
-        messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: `Analizuj poniższy dokument i zwróć wynik w formacie JSON (keys: summary, tags, sectors, stakeholders, sentiment, conclusions, impact {economic, social, legal}, risks, conflicts, relatedLaws {title, context}, main_bill_file_name).\n${attachmentsListStr}\n\n${fullText}` }
-        ]
-    });
+    console.log(`   --- Checking text length against limit ${OPENAI_CHAR_LIMIT} ---`);
+    if (fullText.length > OPENAI_CHAR_LIMIT) {
+        console.log('   🌌 Text is large, using Google Gemini (via Vercel AI SDK)...');
 
-    const content = completion.choices[0].message.content;
-    if (!content) {
-        throw new Error("Empty response from OpenAI");
+        const { google } = require("@ai-sdk/google");
+        const { generateText } = require("ai");
+
+        // Ensure Vercel SDK uses our existing API key
+        if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY && process.env.GOOGLE_API_KEY) {
+            process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GOOGLE_API_KEY;
+        }
+
+        // Vercel SDK models (based on available models)
+        const modelsToTry = ["models/gemini-2.0-flash", "models/gemini-2.0-flash-lite", "models/gemini-flash-latest"];
+        let success = false;
+        let lastError;
+
+        for (const modelName of modelsToTry) {
+            console.log(`   🌌 Trying Google Gemini model (SDK): ${modelName}...`);
+            try {
+                let currentPromptText = fullText;
+
+                // Truncate only for legacy or specific known limits if needed, but 1.5 flash/pro have massive windows.
+                // We'll trust the model by default unless it fails.
+
+                const prompt = `${systemPrompt}\n\nAnalizuj poniższy dokument i zwróć wynik w formacie JSON (keys: summary, tags, sectors, stakeholders, sentiment, conclusions, impact {economic, social, legal}, risks, conflicts, relatedLaws {title, context}, main_bill_file_name).\n${attachmentsListStr}\n\n${currentPromptText}`;
+
+                console.log(`      🚀 Sending request to Gemini SDK (${modelName})...`);
+
+                const { text } = await generateText({
+                    model: google(modelName),
+                    prompt: prompt,
+                });
+
+                console.log(`      Parsing JSON response...`);
+                // Clean markdown if present
+                const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+                analysis = JSON.parse(cleanText);
+
+                console.log(`   ✅ Analysis received from Google Gemini (${modelName})`);
+                success = true;
+                break;
+            } catch (err: any) {
+                console.error(`      ❌ Model ${modelName} failed: ${err.message || err}`);
+                lastError = err;
+            }
+        }
+
+        if (!success) {
+            throw lastError || new Error("All Google Gemini models failed");
+        }
+
+
+
+    } else {
+        console.log('   🤖 Using OpenAI...');
+
+        const completion = await openai.chat.completions.create({
+            model: "gpt-4o",
+            response_format: { type: "json_object" },
+            messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: `Analizuj poniższy dokument i zwróć wynik w formacie JSON (keys: summary, tags, sectors, stakeholders, sentiment, conclusions, impact {economic, social, legal}, risks, conflicts, relatedLaws {title, context}, main_bill_file_name).\n${attachmentsListStr}\n\n${fullText}` }
+            ]
+        });
+
+        const content = completion.choices[0].message.content;
+        if (!content) {
+            throw new Error("Empty response from OpenAI");
+        }
+        analysis = JSON.parse(content);
+        console.log('   ✅ Analysis received from OpenAI');
     }
-
-    const analysis: AiAnalysisResult = JSON.parse(content);
-    console.log('   ✅ Analysis received from OpenAI');
 
     // 4.1. Przetwarzanie wybranego tekstu ustawy (jeśli AI i heurystyka się zgadzają)
     let selectedBillText = "";
 
     // a) Sugestia AI
     if (analysis.main_bill_file_name) {
-        console.log(`   🤖 AI identified main bill file: ${analysis.main_bill_file_name}`);
+        console.log(`   🤖 AI identified main bill file: ${analysis.main_bill_file_name} `);
         const candidate = extractedAttachments.find(a => a.name === analysis.main_bill_file_name);
 
         if (candidate) {
@@ -252,10 +332,10 @@ Pamiętaj:
             const looksLikeBill = (lower.includes('projekt') || lower.includes('ustaw') || lower.includes('tekst') || lower.includes('akt')) && !lower.includes('uzasadnienie') && !lower.includes('opinia');
 
             if (looksLikeBill) {
-                console.log(`   ✅ Confirmed by filename rules. Using this text.`);
+                console.log(`   ✅ Confirmed by filename rules.Using this text.`);
                 selectedBillText = candidate.text;
             } else {
-                console.log(`   ⚠️ Filename validation failed (name usually implies justification/opinion). Checking fallback...`);
+                console.log(`   ⚠️ Filename validation failed(name usually implies justification / opinion).Checking fallback...`);
             }
         }
     }
@@ -271,7 +351,7 @@ Pamiętaj:
     //             && !lower.includes('opinia');
     //     });
     //     if (fallback) {
-    //         console.log(`      Found fallback candidate: ${fallback.name}`);
+    //         console.log(`      Found fallback candidate: ${ fallback.name } `);
     //         selectedBillText = fallback.text;
     //     }
     // }
@@ -348,7 +428,7 @@ Pamiętaj:
                     await tx.contentSection.create({
                         data: {
                             documentId,
-                            externalId: `auto-${documentId}-${i}`, // Autogenerowane ID
+                            externalId: `auto - ${documentId} -${i} `, // Autogenerowane ID
                             label: sec.label,
                             text: sec.text,
                             order: i,
@@ -440,7 +520,7 @@ Pamiętaj:
         throw txError;
     }
 
-    console.log(`   ✨ Analysis completed and saved for Document ID ${documentId}`);
+    console.log(`   ✨ Analysis completed and saved for Document ID ${documentId} `);
 }
 
 async function analyzeBatch(options: {
@@ -450,7 +530,7 @@ async function analyzeBatch(options: {
     limit?: number;
 }) {
     console.log('\n🚀 Starting batch analysis...');
-    console.log(`   Options: ${JSON.stringify(options)}`);
+    console.log(`   Options: ${JSON.stringify(options)} `);
 
     const where: any = {};
 
@@ -480,20 +560,20 @@ async function analyzeBatch(options: {
     let errors = 0;
 
     for (const doc of documents) {
-        console.log(`\n[${processed + 1}/${documents.length}] Processing: ${doc.title.substring(0, 50)}...`);
+        console.log(`\n[${processed + 1}/${documents.length}]Processing: ${doc.title.substring(0, 50)}...`);
         try {
             await analyzeDocument(doc.id);
             processed++;
         } catch (error) {
-            console.error(`   ❌ Error analyzing document ${doc.id}:`, error);
+            console.error(`   ❌ Error analyzing document ${doc.id}: `, error);
             errors++;
         }
     }
 
     console.log('\n' + '━'.repeat(60));
     console.log(`✅ Batch analysis completed!`);
-    console.log(`   Processed: ${processed}`);
-    console.log(`   Errors: ${errors}`);
+    console.log(`   Processed: ${processed} `);
+    console.log(`   Errors: ${errors} `);
 }
 
 async function runCli() {
@@ -502,12 +582,12 @@ async function runCli() {
     // Help
     if (args.includes('--help') || args.length === 0) {
         console.log(`
-Usage:
-  npm run analyze <id>              Analyze specific document
-  npm run analyze -- --new          Analyze all documents without AI analysis
-  npm run analyze -- --since <date> Analyze documents created since date (YYYY-MM-DD)
-  npm run analyze -- --range <start> <end>  Analyze documents created in range
-  npm run analyze -- --limit <n>    Limit number of documents (default 50)
+    Usage:
+  npm run analyze < id > Analyze specific document
+  npm run analyze-- --new Analyze all documents without AI analysis
+  npm run analyze-- --since < date > Analyze documents created since date(YYYY - MM - DD)
+  npm run analyze-- --range < start > <end>Analyze documents created in range
+  npm run analyze-- --limit < n > Limit number of documents(default 50)
         `);
         return;
     }
