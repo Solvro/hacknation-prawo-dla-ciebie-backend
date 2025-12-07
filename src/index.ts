@@ -348,8 +348,14 @@ app.get('/api/v2/documents', async (req, res) => {
             preconsultations, // 'true' | 'false'
             sort, // 'last_change' | 'created' | 'likes'
             tags, // comma separated
-            search // text search
+            search, // text search
+            page = '1',
+            limit = '20'
         } = req.query;
+
+        const pageNum = Math.max(1, parseInt(page as string) || 1);
+        const limitNum = Math.max(1, Math.min(100, parseInt(limit as string) || 20)); // Max 100 items per page
+        const skip = (pageNum - 1) * limitNum;
 
         // 1. Budowanie filtrów (where)
         const where: any = {};
@@ -386,75 +392,118 @@ app.get('/api/v2/documents', async (req, res) => {
             where.OR = [
                 { title: { contains: searchStr, mode: 'insensitive' } },
                 { summary: { contains: searchStr, mode: 'insensitive' } },
-                { status: { contains: searchStr, mode: 'insensitive' } as any }, // rzutowanie dla enumów bywa trudne w prisma, zależy od wersji
+                { status: { contains: searchStr, mode: 'insensitive' } as any },
                 { responsiblePerson: { name: { contains: searchStr, mode: 'insensitive' } } }
-                // Opcjonalnie search w content, ale to może być wolne
             ];
         }
 
-        // 2. Sortowanie (orderBy)
-        let orderBy: any = { updatedAt: 'desc' }; // domyślnie ostatnia zmiana
+        // Liczymy całkowitą ilość pasujących dokumentów (dla meta-danych)
+        const totalCount = await prisma.legalDocument.count({ where });
+
+        // 2. Sortowanie i Pobieranie danych
+        let items: any[] = [];
+        let orderBy: any = undefined;
 
         if (sort === 'created') {
             orderBy = { createdAt: 'desc' };
-        } else if (sort === 'likes') {
-            // Sortowanie po relacji votes jest trudniejsze w prostym findMany bez agregacji.
-            // Prisma nie wspiera bezpośredniego sortowania po relacji one-to-one w łatwy sposób w tej wersji,
-            // chyba że pole jest w tabeli głównej.
-            // Obejście: sortujemy w pamięci lub zakładamy, że mamy cache.
-            // Tu zrobimy domyślne, a po likes posortujemy w JS (nieoptymalne dla dużych baz, ale skuteczne na start)
-            orderBy = undefined;
-        } else if (sort === 'last_change') {
+        } else if (sort === 'last_change' || !sort) {
             orderBy = { updatedAt: 'desc' };
         }
-
-        // 3. Pobranie danych (select - lekki payload)
-        const documents = await prisma.legalDocument.findMany({
-            where,
-            orderBy: orderBy || { updatedAt: 'desc' },
-            select: {
-                id: true,
-                title: true,
-                summary: true,
-                status: true,
-                createdAt: true,
-                updatedAt: true,
-                votes: {
-                    select: { up: true, down: true }
-                },
-                tags: {
-                    select: { name: true }
-                },
-                timeline: {
-                    select: { title: true, date: true }, // tylko nazwa i data bez szczegółów
-                    orderBy: { date: 'asc' }
-                },
-                links: {
-                    select: { url: true, description: true }
-                }
-            }
-        });
-
-        // 4. Post-processing (sortowanie po likes jeśli wybrano)
-        let result = documents.map(doc => ({
-            id: doc.id,
-            title: doc.title,
-            summary: doc.summary,
-            status: doc.status,
-            createdAt: doc.createdAt,
-            lastChange: doc.updatedAt,
-            upvotes: doc.votes?.up || 0,
-            downvotes: doc.votes?.down || 0,
-            tags: doc.tags.map(t => t.name),
-            schedules: doc.timeline.map(t => ({ title: t.title, date: t.date })),
-            links: doc.links
-        }));
+        // Jeśli sort === 'likes', orderBy zostaje undefined, pobierzemy wszystko i posortujemy w RAMie
 
         if (sort === 'likes') {
-            result.sort((a, b) => b.upvotes - a.upvotes);
+            // Strategia dla 'likes': Pobierz wszystko (pasujące do filtrów), posortuj w pamięci, wytnij stronę
+            // Uwaga: Przy bardzo dużej bazie to będzie niewydajne. W przyszłości dodać indeks/pole 'upvotesCount'.
+            const allDocuments = await prisma.legalDocument.findMany({
+                where,
+                select: {
+                    id: true,
+                    title: true,
+                    summary: true,
+                    status: true,
+                    createdAt: true,
+                    updatedAt: true,
+                    votes: { select: { up: true, down: true } },
+                    tags: { select: { name: true } },
+                    timeline: {
+                        select: { title: true, date: true },
+                        orderBy: { date: 'asc' }
+                    },
+                    links: { select: { url: true, description: true } }
+                }
+            });
+
+            // Post-processing i sortowanie
+            const mapped = allDocuments.map(doc => ({
+                id: doc.id,
+                title: doc.title,
+                summary: doc.summary,
+                status: doc.status,
+                createdAt: doc.createdAt,
+                lastChange: doc.updatedAt,
+                upvotes: doc.votes?.up || 0,
+                downvotes: doc.votes?.down || 0,
+                tags: doc.tags.map(t => t.name),
+                schedules: doc.timeline.map(t => ({ title: t.title, date: t.date })),
+                links: doc.links
+            }));
+
+            mapped.sort((a, b) => b.upvotes - a.upvotes);
+
+            // Paginacja w pamięci
+            items = mapped.slice(skip, skip + limitNum);
+
+        } else {
+            // Standardowa strategia DB pagination
+            const documents = await prisma.legalDocument.findMany({
+                where,
+                orderBy: orderBy,
+                skip: skip,
+                take: limitNum,
+                select: {
+                    id: true,
+                    title: true,
+                    summary: true,
+                    status: true,
+                    createdAt: true,
+                    updatedAt: true,
+                    votes: { select: { up: true, down: true } },
+                    tags: { select: { name: true } },
+                    timeline: {
+                        select: { title: true, date: true },
+                        orderBy: { date: 'asc' }
+                    },
+                    links: { select: { url: true, description: true } }
+                }
+            });
+
+            items = documents.map(doc => ({
+                id: doc.id,
+                title: doc.title,
+                summary: doc.summary,
+                status: doc.status,
+                createdAt: doc.createdAt,
+                lastChange: doc.updatedAt,
+                upvotes: doc.votes?.up || 0,
+                downvotes: doc.votes?.down || 0,
+                tags: doc.tags.map(t => t.name),
+                schedules: doc.timeline.map(t => ({ title: t.title, date: t.date })),
+                links: doc.links
+            }));
         }
 
-        res.json(result);
+        // 3. Budowanie odpowiedzi
+        const totalPages = Math.ceil(totalCount / limitNum);
+
+        res.json({
+            data: items,
+            meta: {
+                total: totalCount,
+                page: pageNum,
+                limit: limitNum,
+                totalPages: totalPages
+            }
+        });
 
     } catch (error) {
         console.error('Error in V2 documents endpoint:', error);

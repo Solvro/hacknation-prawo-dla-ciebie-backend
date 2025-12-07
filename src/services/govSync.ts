@@ -234,11 +234,15 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
     // }
 
     // Przygotuj streszczenie z dostępnych pól
+    // Przygotuj streszczenie z dostępnych pól (priorytet: Cele projektu)
+    const goalInfo = project["Cele projektu oraz informacja o przyczynach i potrzebie rozwiązań planowanych w projekcie"];
+    const essenceInfo = project["Istota rozwiązań planowanych w projekcie, w tym proponowane środki realizacji"];
+
     let summary = '';
-    if (project["Cele projektu oraz informacja o przyczynach i potrzebie rozwiązań planowanych w projekcie"]) {
-        summary = project["Cele projektu oraz informacja o przyczynach i potrzebie rozwiązań planowanych w projekcie"];
-    } else if (project["Istota rozwiązań planowanych w projekcie, w tym proponowane środki realizacji"]) {
-        summary = project["Istota rozwiązań planowanych w projekcie, w tym proponowane środki realizacji"];
+    if (goalInfo) {
+        summary = goalInfo;
+    } else if (essenceInfo) {
+        summary = essenceInfo;
     }
 
     // Ogranicz długość streszczenia
@@ -262,7 +266,13 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
         }
     }
 
+    // --- GOV.PL CONTENT PROCESSING (VERSION 1) ---
+    // Wstaw "Istota rozwiązań..." jako zawartość (wersja 1)
+    const contentSource = essenceInfo || summary;
+    let documentId: number;
+
     if (existing) {
+        documentId = existing.id;
         // Aktualizuj istniejący dokument - odłącz stare relacje i podłącz nowe
         await prisma.legalDocument.update({
             where: { id: existing.id },
@@ -280,7 +290,6 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
             }
         });
         console.log(`   📝 Updated: ${title.substring(0, 60)}...`);
-        return { isNew: false };
     } else {
         // Utwórz nowy dokument
         const document = await prisma.legalDocument.create({
@@ -298,6 +307,7 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
                 createdAt
             }
         });
+        documentId = document.id;
 
         // Dodaj osobę odpowiedzialną jeśli istnieje
         if (project["Osoba odpowiedzialna za opracowanie projektu"]) {
@@ -341,40 +351,48 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
             }
         });
 
-        // --- GOV.PL CONTENT PROCESSING (VERSION 1) ---
-        // Wstaw "Istota rozwiązań..." jako zawartość (wersja 1)
-        const contentSource = project["Istota rozwiązań planowanych w projekcie, w tym proponowane środki realizacji"] || summary;
+        console.log(`   ✅ Created: ${title.substring(0, 60)}...`);
+    }
 
-        if (contentSource && contentSource.length > 0) {
-            // Podziel na akapity
-            const paragraphs = contentSource.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0);
+    // UPDATE CONTENT FOR BOTH NEW AND EXISTING DOCUMENTS
+    if (contentSource && contentSource.length > 0) {
+        // Podziel na akapity
+        const paragraphs = contentSource.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0);
 
-            if (paragraphs.length > 0) {
-                // Zapisz ContentSections
-                for (let i = 0; i < paragraphs.length; i++) {
-                    await prisma.contentSection.create({
-                        data: {
-                            documentId: document.id,
-                            externalId: `gov-${document.id}-v1-${i}`,
-                            label: `Akapit ${i + 1}`,
-                            text: paragraphs[i],
-                            version: 1,
-                            order: i
-                        }
-                    });
+        if (paragraphs.length > 0) {
+            // Opcjonalnie: czyścimy stare sekcje dla wersji 1, żeby nie dublować przy update
+            // Uwaga: To usunie stare sekcje wersji 1.
+            await prisma.contentSection.deleteMany({
+                where: {
+                    documentId: documentId,
+                    version: 1
                 }
+            });
 
-                // Zaktualizuj latestContent
-                await prisma.legalDocument.update({
-                    where: { id: document.id },
-                    data: { latestContent: contentSource }
+            // Zapisz ContentSections
+            for (let i = 0; i < paragraphs.length; i++) {
+                await prisma.contentSection.create({
+                    data: {
+                        documentId: documentId,
+                        externalId: `gov-${documentId}-v1-${i}`,
+                        label: `Akapit ${i + 1}`,
+                        text: paragraphs[i],
+                        version: 1,
+                        order: i
+                    }
                 });
             }
-        }
 
-        console.log(`   ✅ Created: ${title.substring(0, 60)}...`);
-        return { isNew: true };
+            // Zaktualizuj latestContent
+            await prisma.legalDocument.update({
+                where: { id: documentId },
+                data: { latestContent: contentSource }
+            });
+            console.log('      💾 Updated content sections and latestContent');
+        }
     }
+
+    return { isNew: !existing };
 }
 
 // Funkcja fetchująca dane z API gov.pl
