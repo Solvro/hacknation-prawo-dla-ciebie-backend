@@ -412,7 +412,7 @@ async function syncSejmProcess(process: SejmProcess): Promise<{ isNew: boolean; 
                 await prisma.link.create({
                     data: {
                         url: link.href,
-                        description: `${link.rel.toUpperCase()} - Legal System`,
+                        description: `${link.rel.toUpperCase()} - System Prawny`,
                         documentId: document.id
                     }
                 });
@@ -439,7 +439,7 @@ async function ensureSejmLink(documentId: number, printNumber: string) {
         await prisma.link.create({
             data: {
                 url: sejmLink,
-                description: `Legislative process in Sejm (print no. ${printNumber})`,
+                description: `Proces legislacyjny w Sejmie (druk nr ${printNumber})`,
                 documentId
             }
         });
@@ -460,7 +460,7 @@ async function processStages(documentId: number, process: SejmProcess) {
                     date: parseDate(stage.date),
                     status: parseTimelineStatus(stage.stageName),
                     title: stage.stageName,
-                    description: stage.decision || stage.comment || `Stage: ${stage.stageName}`,
+                    description: stage.decision || stage.comment || `Etap: ${stage.stageName}`,
                     documentId
                 }
             });
@@ -517,7 +517,7 @@ async function handleVotingsAndVideos(documentId: number, process: SejmProcess, 
             await prisma.link.create({
                 data: {
                     url: videoUrl,
-                    description: `Transmission: ${video.title} (${video.time})`,
+                    description: `Transmisja: ${video.title} (${video.time})`,
                     documentId
                 }
             });
@@ -530,7 +530,7 @@ async function handleExtraCommitteeData(documentId: number, processNumber: strin
 
     for (const meeting of meetings) {
         // Create or find a timeline event for this committee meeting
-        const eventTitle = `Committee Meeting (Extra)`;
+        const eventTitle = `Posiedzenie Komisji (Dodatkowe)`;
         const dateObj = new Date(meeting.date);
 
         // Find existing event
@@ -550,7 +550,7 @@ async function handleExtraCommitteeData(documentId: number, processNumber: strin
                     date: dateObj,
                     title: eventTitle,
                     status: TimelineStatus.SEJM,
-                    description: "Committee meeting materials"
+                    description: "Materiały z posiedzenia komisji"
                 }
             });
             console.log(`      📅 Added timeline event for committee meeting on ${meeting.date}`);
@@ -560,7 +560,7 @@ async function handleExtraCommitteeData(documentId: number, processNumber: strin
         for (const link of meeting.links) {
             let targetUrl = link.url;
             let type = 'html';
-            let title = link.title || 'Document';
+            let title = link.title || 'Dokument';
 
             // Special handling for video transmissions
             if (link.url.includes('transmisja.xsp') && link.url.includes('documentId=')) {
@@ -568,7 +568,7 @@ async function handleExtraCommitteeData(documentId: number, processNumber: strin
                 if (match && match[1]) {
                     targetUrl = `https://www.sejm.gov.pl/Sejm10.nsf/VideoFrame.xsp/${match[1]}`;
                     type = 'video-iframe';
-                    title = 'Video Transmission';
+                    title = 'Transmisja Wideo';
                 }
             } else {
                 const lowerUrl = link.url.toLowerCase();
@@ -618,8 +618,8 @@ async function handleCommitteeStages(documentId: number, process: SejmProcess) {
                     const sitting = await fetchCommitteeSitting(process.term, code, stage.date!);
                     if (sitting) {
                         const webUrl = `https://www.sejm.gov.pl/Sejm10.nsf/biuletyn.xsp?skrnr=${code}-${sitting.num}`;
-                        const title = `Committee Meeting ${code}`;
-                        const description = `[Bulletin no. ${sitting.num}](${webUrl})`;
+                        const title = `Spotkanie komisji ${code}`;
+                        const description = `[Buletyn nr. ${sitting.num}](${webUrl})`;
 
                         const existingEvent = await prisma.timelineEvent.findFirst({
                             where: { documentId, date: new Date(stage.date!), title }
@@ -648,7 +648,7 @@ async function handleCommitteeStages(documentId: number, process: SejmProcess) {
                             await prisma.link.create({
                                 data: {
                                     url: videoUrl,
-                                    description: `Committee transmission: ${video.title}`,
+                                    description: `Transmisja spotkania komisji: ${video.title}`,
                                     documentId
                                 }
                             });
@@ -758,21 +758,34 @@ export async function syncFromSejm(options: {
 
     for (let id = startId; id <= endId; id++) {
         try {
+            console.log(`[${id}/${endId}] 🔍 Fetching process details...`);
             const process = await fetchSejmProcess(id);
             await delay(REQUEST_DELAY);
 
             if (!process) {
+                console.log(`[${id}/${endId}] ❌ Process not found (404) or error.`);
                 stats.notFound++;
                 continue;
             }
 
-            const procDate = parseDate(process.processStartDate || process.documentDate);
-            if (procDate.getFullYear() < 2025) {
-                if (id % 100 === 0) console.log(`   Processed ${id}/${endId} (checking dates...)`);
+            // FILTER: Sync only if RPLID is found in our database
+            if (!process.rclNum) {
+                console.log(`[${id}/${endId}] ⏭️ Skipping: No RPLID (RCL Number) in Sejm data.`);
                 continue;
             }
 
-            console.log(`[${id}/${endId}] ${process.title.substring(0, 50)}...`);
+            // Check if this RPLID is in our DB
+            const dbMatch = await prisma.legalDocument.findFirst({
+                where: { sejmRplId: process.rclNum },
+                select: { id: true }
+            });
+
+            if (!dbMatch) {
+                console.log(`[${id}/${endId}] ⏭️ Skipping: RPLID ${process.rclNum} not found in local DB.`);
+                continue;
+            }
+
+            console.log(`[${id}/${endId}] ✅ Match found for RPLID ${process.rclNum} -> Syncing...`);
 
             const result = await syncSejmProcess(process);
 
@@ -800,4 +813,41 @@ export async function syncFromSejm(options: {
     console.log('   Errors: ' + stats.errors);
 
     return stats;
+}
+
+// Run sync if called directly
+if (require.main === module) {
+    const args = process.argv.slice(2);
+
+    let printId: string | undefined;
+    let startId = 1000;
+    let endId = 2000;
+    let term = 10;
+
+    // 1. Check for --id flag
+    const idIndex = args.indexOf('--id');
+    if (idIndex !== -1 && args[idIndex + 1]) {
+        printId = args[idIndex + 1];
+    } else if (args.length > 0) {
+        if (args.length >= 2) {
+            startId = parseInt(args[0]) || 1000;
+            endId = parseInt(args[1]) || 2000;
+            if (args[2]) term = parseInt(args[2]) || 10;
+        } else {
+            // Single arg usually means startId
+            startId = parseInt(args[0]) || 1000;
+        }
+    }
+
+    const options = printId
+        ? { printId }
+        : { startId, endId, term };
+
+    syncFromSejm(options)
+        .then(() => process.exit(0))
+        .catch(err => {
+            console.error('Fatal error:', err);
+            process.exit(1);
+        })
+        .finally(() => prisma.$disconnect());
 }

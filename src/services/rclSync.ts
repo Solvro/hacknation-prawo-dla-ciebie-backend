@@ -462,7 +462,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
             await prisma.link.create({
                 data: {
                     url: rclLink,
-                    description: 'Project page in RCL',
+                    description: 'Strona projektu na RCL',
                     documentId: existing.id
                 }
             });
@@ -477,7 +477,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
                 await prisma.link.create({
                     data: {
                         url: details.dziennikUstawLink,
-                        description: 'Publication in Dziennik Ustaw',
+                        description: 'Publikacja w Dzienniku Ustaw',
                         documentId: existing.id
                     }
                 });
@@ -514,7 +514,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
                             date: stageDate,
                             status: parseTimelineStatus(stage.name),
                             title: stage.name,
-                            description: `Legislative process stage: ${stage.name}`,
+                            description: `Etap procesu legislacyjnego: ${stage.name}`,
                             documentId: existing.id
                         }
                     });
@@ -571,7 +571,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
         await prisma.link.create({
             data: {
                 url: `${BASE_URL}/projekt/${project.rclId}`,
-                description: 'Project page in RCL',
+                description: 'Strona projektu na RCL',
                 documentId: document.id
             }
         });
@@ -581,7 +581,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
             await prisma.link.create({
                 data: {
                     url: details.dziennikUstawLink,
-                    description: 'Publication in Dziennik Ustaw',
+                    description: 'Publikacja w Dzienniku Ustaw',
                     documentId: document.id
                 }
             });
@@ -624,7 +624,7 @@ async function syncProject(project: RclProject): Promise<{ isNew: boolean; updat
                         date: stageDate,
                         status: parseTimelineStatus(stage.name),
                         title: stage.name,
-                        description: `Legislative process stage: ${stage.name}`,
+                        description: `Etap procesu legislacyjnego: ${stage.name}`,
                         documentId: document.id
                     }
                 });

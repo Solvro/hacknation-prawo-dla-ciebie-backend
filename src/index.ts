@@ -1,12 +1,22 @@
 import express from 'express';
 import cors from 'cors';
 import { prisma } from './lib/prisma';
+import swaggerUi from 'swagger-ui-express';
+import { swaggerSpec } from './config/swagger';
+import officialRoutes from './routes/v3_official';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+
+// Swagger Docs
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+console.log(`📜 Swagger documentation available at http://localhost:${PORT}/docs`);
+
+// V3 Routes (Official/Clerk)
+app.use('/api/v3/official', officialRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
