@@ -120,8 +120,7 @@ router.get('/documents/:id', async (req: Request, res: Response) => {
                 // Using count to show activity without dumping data
                 _count: {
                     select: {
-                        comments: true,
-                        votes: true
+                        comments: true
                     }
                 }
             }

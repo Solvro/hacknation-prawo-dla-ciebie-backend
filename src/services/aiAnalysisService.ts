@@ -625,16 +625,26 @@ async function runCli() {
         options.toDate = new Date(args[rangeIndex + 2]);
     }
 
-    const limitIndex = args.indexOf('--limit');
-    if (limitIndex !== -1 && args[limitIndex + 1]) {
-        options.limit = parseInt(args[limitIndex + 1]);
+    // 3. Limit (default 50, unless --all is passed)
+    let limit = 50;
+    if (args.includes('--all')) {
+        limit = 1000000; // Arbitrary high number for "all"
+    } else if (args.indexOf('--limit') !== -1) {
+        const limitIndex = args.indexOf('--limit');
+        if (args[limitIndex + 1]) {
+            limit = parseInt(args[limitIndex + 1]);
+        }
     }
+    options.limit = limit;
 
     await analyzeBatch(options);
 }
 
 // CLI handler
 if (require.main === module) {
+    // Log raw args for debugging
+    // console.log('Raw Args:', process.argv);
+
     runCli()
         .then(() => process.exit(0))
         .catch(err => {

@@ -1,168 +1,69 @@
-# Prawo dla Ciebie - System Zarządzania Dokumentami Prawnymi
+# Prawo dla Ciebie - Backend
 
-System do przechowywania i zarządzania dokumentami prawnymi z procesem legislacyjnym, komentarzami, analizą AI i relacjami między dokumentami.
+Backend systemu "Prawo dla Ciebie", służącego do agregacji, analizy (AI) i udostępniania informacji o procesach legislacyjnych w Polsce. System integruje dane z Rządowego Centrum Legislacji (RCL) oraz api.sejm.gov.pl.
 
-## 🛠️ Technologie
+## 🚀 Uruchomienie
 
-- **Node.js** + **TypeScript**
-- **Prisma ORM** - modelowanie danych
-- **Supabase** (PostgreSQL) - baza danych
-- **Express.js** - REST API
+### Wymagania
+*   Node.js (v18+)
+*   Baza danych PostgreSQL (np. Supabase)
 
-## 📁 Struktura projektu
+### Instalacja
 
-```
-prawo-dla-ciebie/
-├── prisma/
-│   ├── schema.prisma    # Schemat bazy danych
-│   └── seed.ts          # Import danych z JSON
-├── src/
-│   ├── index.ts         # Serwer Express + API
-│   └── lib/
-│       ├── prisma.ts    # Prisma Client
-│       └── supabase.ts  # Supabase Client
-├── dane.json            # Dane źródłowe
-├── package.json
-└── .env                 # Konfiguracja
-```
+1.  Zainstaluj zależności:
+    ```bash
+    npm install
+    ```
 
-## 🚀 Instalacja
+2.  Skonfiguruj zmienne środowiskowe w `.env`:
+    ```env
+    DATABASE_URL="postgresql://user:password@host:port/db"
+    DIRECT_URL="postgresql://user:password@host:port/db"
+    OPENAI_API_KEY="sk-..."
+    # Opcjonalne:
+    GOOGLE_GENERATIVE_AI_API_KEY="AI..."
+    OFFICIAL_API_TOKEN="twoj-tajny-token"
+    ```
 
-### 1. Zainstaluj zależności
+3.  Przygotuj bazę danych:
+    ```bash
+    npx prisma generate
+    npx prisma db push
+    ```
 
-```bash
-npm install
-```
+4.  Uruchom serwer deweloperski:
+    ```bash
+    npm run dev
+    ```
 
-### 2. Skonfiguruj bazę danych
+Serwer dostępny będzie pod adresem: `http://localhost:3000`.
 
-Edytuj plik `.env` i uzupełnij hasło do bazy Supabase:
+## 📚 Dokumentacja API (Swagger)
 
-```env
-DATABASE_URL="postgresql://postgres.vxtgtfkyuyedawjxoskm:[TWOJE-HASŁO]@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true"
-DIRECT_URL="postgresql://postgres.vxtgtfkyuyedawjxoskm:[TWOJE-HASŁO]@aws-0-eu-central-1.pooler.supabase.com:5432/postgres"
-```
+Pełna dokumentacja endpointów dostępna jest pod adresem:
+👉 **[http://localhost:3000/docs](http://localhost:3000/docs)**
 
-### 3. Wygeneruj Prisma Client
+### Kluczowe endpointy V3 (dla Urzędnika)
+Chronione tokenem `OFFICIAL_API_TOKEN`.
+*   `GET /api/v3/official/documents` - Lista dokumentów (uproszczona)
+*   `GET /api/v3/official/documents/:id` - Szczegóły dokumentu
+*   `POST /api/v3/official/documents` - Dodawanie dokumentu
+*   `POST /api/v3/official/documents/:id/timeline` - Dodawanie etapu
+*   `GET /api/v3/official/comments` - Moderacja komentarzy
 
-```bash
-npm run prisma:generate
-```
+## 🔄 Synchronizacja Danych
 
-### 4. Synchronizuj schemat z bazą
+System posiada skrypty do pobierania danych z zewnętrznych źródeł:
 
-```bash
-npm run prisma:push
-```
+1.  **RCL (Rządowe Centrum Legislacji)**:
+    ```bash
+    npm run sync:rcl [startPage] [pages]
+    # np. npm run sync:rcl 1 5
+    ```
 
-### 5. Załaduj dane z dane.json
-
-```bash
-npm run seed
-```
-
-### 6. Uruchom serwer
-
-```bash
-npm run dev
-```
-
-Serwer: `http://localhost:3000`
-
-## 📡 API Endpoints
-
-### Dokumenty
-
-| Metoda | Endpoint | Opis |
-|--------|----------|------|
-| GET | `/api/documents` | Lista wszystkich dokumentów |
-| GET | `/api/documents/:id` | Szczegóły dokumentu |
-| GET | `/api/search` | Wyszukiwanie dokumentów |
-
-#### Parametry wyszukiwania `/api/search`
-
-- `q` - tekst w tytule/streszczeniu
-- `status` - DRAFT, SEJM, SENATE, PRESIDENT, ACCEPTED, REJECTED
-- `type` - USTAWA, ROZPORZADZENIE, UCHWALA, etc.
-- `tag` - nazwa tagu
-- `sector` - nazwa sektora
-
-### Głosowanie
-
-| Metoda | Endpoint | Opis |
-|--------|----------|------|
-| POST | `/api/documents/:id/vote` | Głosuj na dokument |
-| POST | `/api/opinions/:id/vote` | Głosuj na opinię |
-
-```bash
-# Przykład
-curl -X POST http://localhost:3000/api/documents/1/vote \
-  -H "Content-Type: application/json" \
-  -d '{"type": "up"}'
-```
-
-### Komentarze
-
-| Metoda | Endpoint | Opis |
-|--------|----------|------|
-| POST | `/api/documents/:id/comments` | Dodaj komentarz |
-| GET | `/api/documents/:id/comments` | Pobierz komentarze |
-
-```bash
-# Przykład
-curl -X POST http://localhost:3000/api/documents/1/comments \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "Mój komentarz",
-    "sectionExternalId": "art-1",
-    "isAnonymous": false,
-    "authorName": "Jan Kowalski"
-  }'
-```
-
-### Filtry i metadane
-
-| Metoda | Endpoint | Opis |
-|--------|----------|------|
-| GET | `/api/tags` | Lista tagów |
-| GET | `/api/sectors` | Lista sektorów |
-| GET | `/api/stakeholders` | Lista interesariuszy |
-| GET | `/api/stats` | Statystyki systemu |
-
-## 🗄️ Model danych
-
-### Główne encje
-
-| Model | Opis |
-|-------|------|
-| `LegalDocument` | Dokument prawny (ustawa, rozporządzenie, etc.) |
-| `ResponsiblePerson` | Osoba odpowiedzialna za dokument |
-| `Votes` | Głosy za/przeciw dokumentowi |
-| `Tag`, `Sector`, `Stakeholder` | Klasyfikacja dokumentów |
-| `Link` | Linki zewnętrzne |
-| `TimelineEvent` | Etapy procesu legislacyjnego |
-| `Attachment` | Załączniki do etapów |
-| `ContentSection` | Artykuły/sekcje dokumentu |
-| `Opinion` | Opinie do artykułów |
-| `Comment` | Komentarze użytkowników |
-| `AiAnalysis` | Analiza AI (sentiment, wpływ, ryzyka) |
-| `DocumentRelation` | Relacje między dokumentami |
-
-## 🔧 Komendy
-
-```bash
-npm run dev          # Uruchom w trybie dev
-npm run build        # Buduj do produkcji
-npm start            # Uruchom produkcyjnie
-
-npm run prisma:generate  # Generuj Prisma Client
-npm run prisma:push      # Synchronizuj schemat z bazą
-npm run prisma:migrate   # Migracje (dev)
-npm run prisma:studio    # Przeglądarka bazy danych
-
-npm run seed             # Załaduj dane z dane.json
-```
-
-## 📝 Licencja
-
-MIT
+2.  **Sejm (api.sejm.gov.pl)**:
+    ```bash
+    npm run sync:sejm [startId] [endId]
+    # np. npm run sync:sejm 1000 2000
+    ```
+    Skrypt Sejmowy automatycznie łączy procesy z istniejącymi dokumentami w bazie (po RPLID).
