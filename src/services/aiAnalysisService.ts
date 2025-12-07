@@ -28,6 +28,7 @@ interface AiAnalysisResult {
         title: string;
         context: string;
     }[];
+    main_bill_file_name?: string; // AI wskazuje nazwę pliku, który jest główną ustawą
 }
 
 async function extractTextFromPdf(url: string): Promise<string> {
@@ -114,6 +115,10 @@ async function analyzeDocument(documentId: number) {
     console.log('   📄 Extracting text from attachments...');
     let attachmentText = "";
 
+    // Struktura do przechowywania wyekstrahowanych tekstów w celu późniejszej identyfikacji ustawy
+    const extractedAttachments: { name: string, text: string, id: number }[] = [];
+    let attachmentsListStr = "Lista dostępnych plików:\n";
+
     // Zbieramy wszystkie załączniki
     const attachments = document.timeline.flatMap(event => event.attachments).filter(a => a.type.toLowerCase().includes('pdf') || a.url.endsWith('.pdf'));
 
@@ -122,6 +127,7 @@ async function analyzeDocument(documentId: number) {
 
     // Bierzemy max 3 najważniejsze PDFy (np. tekst projektu, uzasadnienie)
     let processedPdfs = 0;
+
     for (const event of sortedTimeline) {
         if (processedPdfs >= 3) break;
 
@@ -129,8 +135,18 @@ async function analyzeDocument(documentId: number) {
             if ((pd.type.toLowerCase().includes('pdf') || pd.url.endsWith('.pdf')) && processedPdfs < 3) {
                 console.log(`      Downloading: ${pd.name}...`);
                 const text = await extractTextFromPdf(pd.url);
-                if (text.length > 100) { // Ignoruj puste/błędne
-                    attachmentText += `\n--- ZAŁĄCZNIK: ${pd.name} ---\n${text.substring(0, 50000)}\n`; // Limit znaków na załącznik
+
+                if (text.length > 100) {
+                    const snippet = `\n--- ZAŁĄCZNIK: ${pd.name} ---\n${text.substring(0, 50000)}\n`; // Limit znaków na załącznik
+                    attachmentText += snippet;
+
+                    extractedAttachments.push({
+                        name: pd.name,
+                        text: text,
+                        id: pd.id
+                    });
+
+                    attachmentsListStr += `- ${pd.name}\n`;
 
                     // Zapisz tekst załącznika w bazie
                     try {
@@ -152,18 +168,6 @@ async function analyzeDocument(documentId: number) {
 
     fullText += attachmentText;
 
-    // --- PARSING CONTENT INTO SECTIONS ---
-    // Jeśli mamy tekst z załączników, spróbujmy go podzielić na sekcje i zapisać
-    let generatedSections: { label: string, text: string }[] = [];
-    if (attachmentText.length > 0) {
-        console.log('   ✂️ Parsing text into content sections...');
-        // Usuń nagłówki "--- ZAŁĄCZNIK... ---" dla czystszego parsowania
-        // (Ale zachowaj je w promptcie dla AI)
-        const pureLawText = attachmentText.replace(/--- ZAŁĄCZNIK: .*? ---\n/g, '');
-        generatedSections = parseContentSections(pureLawText);
-        console.log(`      Found ${generatedSections.length} sections`);
-    }
-
     // Ograniczenie całości tekstu (zabezpieczenie dla modelu)
     if (fullText.length > 100000) {
         console.log('   ⚠️ Text too long, truncating...');
@@ -184,6 +188,7 @@ Pamiętaj:
 - Zasugeruj powiązane akty prawne ("relatedLaws").
 - Streszczenie ("summary") powinno być merytoryczne i zwięzłe.
 - Tagi i sektory powinny być ogólne (np. "Zdrowie", "Finanse", "Podatki").
+- "main_bill_file_name": Wskaż nazwę pliku z listy załączników, który zawiera najnowszy główny tekst procedowanej ustawy/projektu (pomiń uzasadnienia, opinie, OSR, jeśli dostępny jest tekst właściwy). Jeśli nie ma ewidentnego tekstu ustawy, zwróć null.
     `;
 
     const completion = await openai.chat.completions.create({
@@ -191,7 +196,7 @@ Pamiętaj:
         response_format: { type: "json_object" },
         messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: `Analizuj poniższy dokument i zwróć wynik w formacie JSON (keys: summary, tags, sectors, stakeholders, sentiment, conclusions, impact {economic, social, legal}, risks, conflicts, relatedLaws {title, context}):\n\n${fullText}` }
+            { role: "user", content: `Analizuj poniższy dokument i zwróć wynik w formacie JSON (keys: summary, tags, sectors, stakeholders, sentiment, conclusions, impact {economic, social, legal}, risks, conflicts, relatedLaws {title, context}, main_bill_file_name).\n${attachmentsListStr}\n\n${fullText}` }
         ]
     });
 
@@ -203,7 +208,53 @@ Pamiętaj:
     const analysis: AiAnalysisResult = JSON.parse(content);
     console.log('   ✅ Analysis received from OpenAI');
 
-    // 4. Zapisz wyniki w bazie danych
+    // 4.1. Przetwarzanie wybranego tekstu ustawy (jeśli AI i heurystyka się zgadzają)
+    let selectedBillText = "";
+
+    // a) Sugestia AI
+    if (analysis.main_bill_file_name) {
+        console.log(`   🤖 AI identified main bill file: ${analysis.main_bill_file_name}`);
+        const candidate = extractedAttachments.find(a => a.name === analysis.main_bill_file_name);
+
+        if (candidate) {
+            // b) Weryfikacja nazwy (heurystyka użytkownika)
+            const lower = candidate.name.toLowerCase();
+            const looksLikeBill = (lower.includes('projekt') || lower.includes('ustaw') || lower.includes('tekst') || lower.includes('akt')) && !lower.includes('uzasadnienie') && !lower.includes('opinia');
+
+            if (looksLikeBill) {
+                console.log(`   ✅ Confirmed by filename rules. Using this text.`);
+                selectedBillText = candidate.text;
+            } else {
+                console.log(`   ⚠️ Filename validation failed (name usually implies justification/opinion). Checking fallback...`);
+            }
+        }
+    }
+
+    // Fallback: Jeśli AI nie wskazało lub walidacja nazwy padła, szukaj klasycznie
+    // if (!selectedBillText) {
+    //     console.log('   🔍 Using standard filename heuristics for bill text...');
+    //     const fallback = extractedAttachments.find(a => {
+    //         const lower = a.name.toLowerCase();
+    //         return (lower.includes('projekt') || lower.includes('tekst') || lower.includes('ustaw'))
+    //             && !lower.includes('uzasadnienie')
+    //             && !lower.includes('ocena')
+    //             && !lower.includes('opinia');
+    //     });
+    //     if (fallback) {
+    //         console.log(`      Found fallback candidate: ${fallback.name}`);
+    //         selectedBillText = fallback.text;
+    //     }
+    // }
+
+    // Parsowanie sekcji
+    let generatedSections: { label: string, text: string }[] = [];
+    if (selectedBillText) {
+        console.log('   ✂️ Parsing identified bill text into content sections...');
+        generatedSections = parseContentSections(selectedBillText);
+        console.log(`      Found ${generatedSections.length} sections`);
+    }
+
+    // 4.2 Zapisz wyniki w bazie danych
     console.log('   💾 Saving findings to database...');
 
     try {
@@ -248,10 +299,18 @@ Pamiętaj:
                 }
             });
 
+            // Aktualizacja latestContent (jeśli znaleziono tekst ustawy)
+            if (selectedBillText) {
+                await tx.legalDocument.update({
+                    where: { id: documentId },
+                    data: { latestContent: selectedBillText }
+                });
+                console.log('      💾 Updated latestContent with selected bill text');
+            }
+
             // Zapis ContentSections (jeśli wygenerowano)
             if (generatedSections.length > 0) {
                 console.log('      Updating Content Sections...');
-                // Opcjonalnie: czyścić stare? Tak, jeśli nadpisujemy.
                 await tx.contentSection.deleteMany({ where: { documentId } });
 
                 for (let i = 0; i < generatedSections.length; i++) {
@@ -333,8 +392,6 @@ Pamiętaj:
             console.log('      Adding relations...');
             if (analysis.relatedLaws && Array.isArray(analysis.relatedLaws)) {
                 for (const rel of analysis.relatedLaws) {
-                    // Sprawdź czy relacja już istnieje (proste sprawdzenie po tytule)
-                    // (Opcjonalnie, tu po prostu dodajemy nową)
                     await tx.documentRelation.create({
                         data: {
                             fromDocumentId: documentId,

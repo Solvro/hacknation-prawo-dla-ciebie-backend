@@ -341,6 +341,37 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
             }
         });
 
+        // --- GOV.PL CONTENT PROCESSING (VERSION 1) ---
+        // Wstaw "Istota rozwiązań..." jako zawartość (wersja 1)
+        const contentSource = project["Istota rozwiązań planowanych w projekcie, w tym proponowane środki realizacji"] || summary;
+
+        if (contentSource && contentSource.length > 0) {
+            // Podziel na akapity
+            const paragraphs = contentSource.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0);
+
+            if (paragraphs.length > 0) {
+                // Zapisz ContentSections
+                for (let i = 0; i < paragraphs.length; i++) {
+                    await prisma.contentSection.create({
+                        data: {
+                            documentId: document.id,
+                            externalId: `gov-${document.id}-v1-${i}`,
+                            label: `Akapit ${i + 1}`,
+                            text: paragraphs[i],
+                            version: 1,
+                            order: i
+                        }
+                    });
+                }
+
+                // Zaktualizuj latestContent
+                await prisma.legalDocument.update({
+                    where: { id: document.id },
+                    data: { latestContent: contentSource }
+                });
+            }
+        }
+
         console.log(`   ✅ Created: ${title.substring(0, 60)}...`);
         return { isNew: true };
     }
