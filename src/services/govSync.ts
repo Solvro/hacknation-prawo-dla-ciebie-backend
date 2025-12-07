@@ -235,14 +235,23 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
 
     // Przygotuj streszczenie z dostępnych pól
     // Przygotuj streszczenie z dostępnych pól (priorytet: Cele projektu)
-    const goalInfo = project["Cele projektu oraz informacja o przyczynach i potrzebie rozwiązań planowanych w projekcie"];
-    const essenceInfo = project["Istota rozwiązań planowanych w projekcie, w tym proponowane środki realizacji"];
+    const goalInfo = project["Cele projektu oraz informacja o przyczynach i potrzebie rozwiązań planowanych w projekcie"] || '';
+    const essenceInfo = project["Istota rozwiązań planowanych w projekcie, w tym proponowane środki realizacji"] || '';
 
     let summary = '';
-    if (goalInfo) {
-        summary = goalInfo;
-    } else if (essenceInfo) {
-        summary = essenceInfo;
+    let contentSource = '';
+
+    if (goalInfo && essenceInfo) {
+        if (goalInfo.length <= essenceInfo.length) {
+            summary = goalInfo;
+            contentSource = essenceInfo;
+        } else {
+            summary = essenceInfo;
+            contentSource = goalInfo;
+        }
+    } else {
+        summary = goalInfo || essenceInfo;
+        contentSource = goalInfo || essenceInfo;
     }
 
     // Ogranicz długość streszczenia
@@ -268,7 +277,7 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
 
     // --- GOV.PL CONTENT PROCESSING (VERSION 1) ---
     // Wstaw "Istota rozwiązań..." jako zawartość (wersja 1)
-    const contentSource = essenceInfo || summary;
+    // Wstaw contentSource jako zawartość (wersja 1)
     let documentId: number;
 
     if (existing) {
@@ -352,13 +361,26 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
         });
 
         // Dodaj zdarzenie powstania
-        if (createdAt) {
+        // Dodaj zdarzenie powstania
+        await prisma.timelineEvent.create({
+            data: {
+                title: "Utworzono wpis w gov.pl",
+                date: createdAt || new Date(),
+                status: TimelineStatus.DRAFT,
+                description: "Projekt został opublikowany w serwisie gov.pl",
+                documentId: document.id
+            }
+        });
+
+        // Dodaj status z pola "Status realizacji" do timeline
+        const statusDesc = parseJsonArrayToString(project["Status realizacji"]);
+        if (statusDesc) {
             await prisma.timelineEvent.create({
                 data: {
-                    title: "Utworzono wpis w gov.pl",
-                    date: createdAt,
+                    title: statusDesc,
+                    date: createdAt || new Date(),
                     status: TimelineStatus.DRAFT,
-                    description: "Projekt został opublikowany w serwisie gov.pl",
+                    description: `Status realizacji: ${statusDesc}`,
                     documentId: document.id
                 }
             });
@@ -444,7 +466,8 @@ export async function syncFromGovPl(): Promise<{ created: number; updated: numbe
     const stats = { created: 0, updated: 0, errors: 0 };
 
     // Lista endpoint IDs do synchronizacji
-    const pageIds = ['20874196', '20874195'];
+    // '20874196'
+    const pageIds = ['20874195'];
 
     for (const pageId of pageIds) {
         try {

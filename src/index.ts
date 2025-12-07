@@ -429,7 +429,10 @@ app.get('/api/v2/documents', async (req, res) => {
                         select: { title: true, date: true },
                         orderBy: { date: 'asc' }
                     },
-                    links: { select: { url: true, description: true } }
+                    links: { select: { url: true, description: true } },
+                    type: true,
+                    submittingEntity: true,
+                    responsiblePerson: { select: { name: true, role: true } }
                 }
             });
 
@@ -445,7 +448,10 @@ app.get('/api/v2/documents', async (req, res) => {
                 downvotes: doc.votes?.down || 0,
                 tags: doc.tags.map(t => t.name),
                 schedules: doc.timeline.map(t => ({ title: t.title, date: t.date })),
-                links: doc.links
+                links: doc.links,
+                type: doc.type,
+                submittingEntity: doc.submittingEntity,
+                responsiblePerson: doc.responsiblePerson ? { name: doc.responsiblePerson.name, role: doc.responsiblePerson.role } : null
             }));
 
             mapped.sort((a, b) => b.upvotes - a.upvotes);
@@ -473,7 +479,10 @@ app.get('/api/v2/documents', async (req, res) => {
                         select: { title: true, date: true },
                         orderBy: { date: 'asc' }
                     },
-                    links: { select: { url: true, description: true } }
+                    links: { select: { url: true, description: true } },
+                    type: true,
+                    submittingEntity: true,
+                    responsiblePerson: { select: { name: true, role: true } }
                 }
             });
 
@@ -488,7 +497,10 @@ app.get('/api/v2/documents', async (req, res) => {
                 downvotes: doc.votes?.down || 0,
                 tags: doc.tags.map(t => t.name),
                 schedules: doc.timeline.map(t => ({ title: t.title, date: t.date })),
-                links: doc.links
+                links: doc.links,
+                type: doc.type,
+                submittingEntity: doc.submittingEntity,
+                responsiblePerson: doc.responsiblePerson ? { name: doc.responsiblePerson.name, role: doc.responsiblePerson.role } : null
             }));
         }
 
