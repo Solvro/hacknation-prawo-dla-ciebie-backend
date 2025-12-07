@@ -2,6 +2,19 @@
 import 'dotenv/config';
 import OpenAI from 'openai';
 const pdf = require('pdf-parse');
+const mammoth = require("mammoth");
+
+async function extractTextFromDocx(url: string): Promise<string> {
+    try {
+        const response = await fetch(url);
+        const buffer = await response.arrayBuffer();
+        const result = await mammoth.extractRawText({ buffer: Buffer.from(buffer) });
+        return result.value;
+    } catch (error) {
+        console.error(`Error extracting text from DOCX ${url}:`, error);
+        return "";
+    }
+}
 import { prisma } from '../lib/prisma';
 import { DocumentRelation, LegalDocument } from '@prisma/client';
 
@@ -125,16 +138,33 @@ async function analyzeDocument(documentId: number) {
     // Sortujemy od najnowszych (heurystyka po ID eventu timeline)
     const sortedTimeline = document.timeline.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-    // Bierzemy max 3 najważniejsze PDFy (np. tekst projektu, uzasadnienie)
-    let processedPdfs = 0;
+
+
+    // ... existing code ...
+
+    // Bierzemy max 3 najważniejsze dokumenty (PDF lub DOCX)
+    let processedDocs = 0;
 
     for (const event of sortedTimeline) {
-        if (processedPdfs >= 3) break;
+        if (processedDocs >= 3) break;
 
         for (const pd of event.attachments) {
-            if ((pd.type.toLowerCase().includes('pdf') || pd.url.endsWith('.pdf')) && processedPdfs < 3) {
+            if (processedDocs >= 3) break;
+
+            const lowerUrl = pd.url.toLowerCase();
+            const lowerType = pd.type.toLowerCase();
+            const isPdf = lowerType.includes('pdf') || lowerUrl.endsWith('.pdf');
+            const isDoc = lowerType.includes('doc') || lowerUrl.endsWith('.docx') || lowerUrl.endsWith('.doc');
+
+            if (isPdf || isDoc) {
                 console.log(`      Downloading: ${pd.name}...`);
-                const text = await extractTextFromPdf(pd.url);
+                let text = "";
+
+                if (isPdf) {
+                    text = await extractTextFromPdf(pd.url);
+                } else if (isDoc) {
+                    text = await extractTextFromDocx(pd.url);
+                }
 
                 if (text.length > 100) {
                     const snippet = `\n--- ZAŁĄCZNIK: ${pd.name} ---\n${text.substring(0, 50000)}\n`; // Limit znaków na załącznik
@@ -159,7 +189,7 @@ async function analyzeDocument(documentId: number) {
                         console.error('      ⚠️ Failed to save attachment text:', err);
                     }
 
-                    processedPdfs++;
+                    processedDocs++;
                 }
             }
         }

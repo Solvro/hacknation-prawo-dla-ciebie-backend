@@ -305,7 +305,7 @@ export async function fetchStageAttachments(stageUrl: string): Promise<RclAttach
             // Typ pliku
             const ext = href.split('.').pop()?.toLowerCase() || 'unknown';
 
-            if (ext !== 'pdf') return;
+            if (!['pdf', 'docx', 'doc'].includes(ext)) return;
 
             attachments.push({
                 name,

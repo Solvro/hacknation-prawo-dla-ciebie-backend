@@ -351,6 +351,19 @@ async function syncProject(project: GovProject): Promise<{ isNew: boolean }> {
             }
         });
 
+        // Dodaj zdarzenie powstania
+        if (createdAt) {
+            await prisma.timelineEvent.create({
+                data: {
+                    title: "Utworzono wpis w gov.pl",
+                    date: createdAt,
+                    status: TimelineStatus.DRAFT,
+                    description: "Projekt został opublikowany w serwisie gov.pl",
+                    documentId: document.id
+                }
+            });
+        }
+
         console.log(`   ✅ Created: ${title.substring(0, 60)}...`);
     }
 

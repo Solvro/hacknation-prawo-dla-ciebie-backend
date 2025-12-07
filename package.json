@@ -35,6 +35,7 @@
         "cors": "^2.8.5",
         "dotenv": "^17.2.3",
         "express": "^4.21.1",
+        "mammoth": "^1.11.0",
         "node-cron": "^4.2.1",
         "openai": "^6.10.0",
         "pdf-parse": "^2.4.5",
